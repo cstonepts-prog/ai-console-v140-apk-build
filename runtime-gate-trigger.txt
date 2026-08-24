@@ -1,0 +1,2 @@
+EXEC002 Android 16 runtime gate trigger
+APK SHA256 e0e21ab369cf5f3e6bc9fffee6d7c689e2bb0b537ecb17f6fe1c17837fa3a076
