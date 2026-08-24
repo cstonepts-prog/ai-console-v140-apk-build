@@ -1,0 +1,165 @@
+name: AI Console v1.4.2 Android 16 Runtime Gate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PACKAGE_NAME: com.nexarenew.aiconsole
+  APK_NAME: AI_Console_v1.4.2_EXEC002_preview-release-signed.apk
+  APK_SHA256: e0e21ab369cf5f3e6bc9fffee6d7c689e2bb0b537ecb17f6fe1c17837fa3a076
+  SOURCE_ARTIFACT_ID: '9542426367'
+  ANDROID_API_LEVEL: '36'
+  ANDROID_BUILD_TOOLS_VERSION: '36.0.0'
+  ANDROID_SYSTEM_IMAGE: system-images;android-36;google_apis;x86_64
+  AVD_NAME: ai-console-api36
+
+jobs:
+  android16-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout runtime workflow
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+        with:
+          packages: ''
+          accept-android-sdk-licenses: true
+
+      - name: Download and verify exact successful APK artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            --retry 3 --retry-delay 2 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o /tmp/apk-artifact.zip
+          unzip -q /tmp/apk-artifact.zip -d artifact
+          test -s "artifact/${APK_NAME}"
+          echo "${APK_SHA256}  artifact/${APK_NAME}" | sha256sum -c -
+          cp "artifact/${APK_NAME}" "$APK_NAME"
+          echo 'APK_ARTIFACT_IDENTITY=PASS' | tee runtime-artifact-status.txt
+
+      - name: Install Android 16 emulator image
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager \
+            "platform-tools" \
+            "emulator" \
+            "platforms;android-${ANDROID_API_LEVEL}" \
+            "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
+            "${ANDROID_SYSTEM_IMAGE}"
+          sdkmanager --list_installed | tee android-sdk-installed.txt
+
+      - name: Create and boot Android 16 emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 666 /dev/kvm || true
+            ls -l /dev/kvm | tee kvm-status.txt
+          else
+            echo 'KVM_DEVICE=ABSENT' | tee kvm-status.txt
+          fi
+          echo no | avdmanager create avd --force \
+            --name "$AVD_NAME" \
+            --package "$ANDROID_SYSTEM_IMAGE"
+          nohup "$ANDROID_HOME/emulator/emulator" \
+            -avd "$AVD_NAME" \
+            -no-window \
+            -no-audio \
+            -no-boot-anim \
+            -no-snapshot \
+            -gpu swiftshader_indirect \
+            -no-metrics \
+            > emulator-boot.log 2>&1 &
+          echo $! > emulator.pid
+          adb wait-for-device
+          timeout 600 bash -c 'until [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" == "1" ]]; do sleep 5; done'
+          adb shell getprop ro.build.version.sdk | tr -d '\r' | tee emulator-api-level.txt
+          grep -Fx '36' emulator-api-level.txt
+          adb shell getprop ro.product.cpu.abi | tr -d '\r' | tee emulator-abi.txt
+          echo 'ANDROID_16_BOOT=PASS' | tee runtime-boot-status.txt
+
+      - name: Install, cold-launch and verify process survival
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb install -r "$APK_NAME" | tee adb-install.txt
+          grep -F 'Success' adb-install.txt
+          adb shell pm clear "$PACKAGE_NAME" >/dev/null 2>&1 || true
+          adb logcat -c
+          LAUNCH_COMPONENT="$(adb shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$PACKAGE_NAME" 2>/dev/null | tr -d '\r' | tail -1)"
+          if [[ -z "$LAUNCH_COMPONENT" || "$LAUNCH_COMPONENT" == 'No activity found' ]]; then
+            echo 'Unable to resolve launcher activity' >&2
+            adb shell dumpsys package "$PACKAGE_NAME" > dumpsys-package.txt
+            exit 1
+          fi
+          echo "$LAUNCH_COMPONENT" | tee launcher-component.txt
+          START_OUTPUT="$(adb shell am start -W -S -n "$LAUNCH_COMPONENT" 2>&1 | tr -d '\r')"
+          printf '%s\n' "$START_OUTPUT" | tee mainactivity-start.txt
+          printf '%s\n' "$START_OUTPUT" | grep -F 'Status: ok'
+          sleep 30
+          adb logcat -d > logcat-full.txt
+          PID="$(adb shell pidof "$PACKAGE_NAME" 2>/dev/null | tr -d '\r[:space:]')"
+          if [[ -z "$PID" ]]; then
+            echo 'ANDROID_16_PROCESS_SURVIVAL=FAIL_PROCESS_DEAD' | tee runtime-process-status.txt
+            exit 1
+          fi
+          echo "PID=$PID" | tee runtime-process-status.txt
+          FATAL_PATTERN='FATAL EXCEPTION|UnsatisfiedLinkError|NoClassDefFoundError|ActivityNotFoundException|ReactNativeJS.*(TypeError|ReferenceError|Invariant Violation|Fatal)|SoLoader|SIGSEGV|ANR in com\.nexarenew\.aiconsole|Permission Denial|Process: com\.nexarenew\.aiconsole.*has died'
+          if grep -Eai "$FATAL_PATTERN" logcat-full.txt > logcat-fatal-filtered.txt; then
+            cat logcat-fatal-filtered.txt
+            echo 'ANDROID_16_PROCESS_SURVIVAL=FAIL_FATAL_LOG' | tee -a runtime-process-status.txt
+            exit 1
+          fi
+          : > logcat-fatal-filtered.txt
+          adb shell dumpsys activity activities > dumpsys-activity.txt
+          adb shell dumpsys package "$PACKAGE_NAME" > dumpsys-package.txt
+          echo 'ANDROID_16_COLD_LAUNCH=PASS' | tee runtime-final-status.txt
+          echo 'ANDROID_16_PROCESS_SURVIVAL=PASS' | tee -a runtime-final-status.txt
+
+      - name: Upload Android 16 runtime evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: AI-Console-v1.4.2-Android16-Runtime-Evidence
+          path: |
+            runtime-artifact-status.txt
+            android-sdk-installed.txt
+            kvm-status.txt
+            emulator-boot.log
+            emulator-api-level.txt
+            emulator-abi.txt
+            runtime-boot-status.txt
+            adb-install.txt
+            launcher-component.txt
+            mainactivity-start.txt
+            runtime-process-status.txt
+            runtime-final-status.txt
+            logcat-full.txt
+            logcat-fatal-filtered.txt
+            dumpsys-activity.txt
+            dumpsys-package.txt
+          if-no-files-found: warn
+          retention-days: 14
