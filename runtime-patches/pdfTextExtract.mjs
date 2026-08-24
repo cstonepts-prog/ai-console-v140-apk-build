@@ -2,7 +2,7 @@ const utf8Decoder = new TextDecoder('utf-8', { fatal: false });
 
 // React Native/Hermes only guarantees the UTF-8 TextDecoder encoding. PDFs need
 // a byte-preserving 1:1 view for object/stream offsets, so decode Latin-1
-// manually instead of constructing TextDecoder('latin1') at module import time.
+// manually instead of constructing a non-UTF-8 decoder at module import time.
 export const bytesToLatin1 = (bytes) => {
   const source = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
   const chunkSize = 0x8000;
