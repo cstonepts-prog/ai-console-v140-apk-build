@@ -1,0 +1,158 @@
+name: Label Pro encrypted standalone build
+
+on:
+  push:
+    branches:
+      - label-pro-secure-build-240820262045
+    paths:
+      - '.github/workflows/label-pro-secure-build.yml'
+      - 'label-pro-secure-build/start.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      CI: '1'
+      NODE_ENV: production
+      LABEL_PRO_ANDROID_APPLICATION_ID: net.nexarenew.labelpro
+      EXPECTED_SOURCE_SHA256: cc566d7cc9af38e72f24d5a1e1efe3be9721d3cf7e97f9543d5d1968b14d8ae4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.16.0'
+          package-manager-cache: false
+
+      - name: Generate ephemeral source decryption key
+        run: |
+          set -euo pipefail
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/source-private.pem"
+          openssl pkey -in "$RUNNER_TEMP/source-private.pem" -pubout -out "$RUNNER_TEMP/source-public.pem"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Label-Pro-Ephemeral-Source-Public-Key
+          path: ${{ runner.temp }}/source-public.pem
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Wait for encrypted source payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          FOUND=0
+          for i in $(seq 1 240); do
+            git fetch origin "$GITHUB_REF_NAME" --quiet || true
+            REF="origin/$GITHUB_REF_NAME"
+            if git cat-file -e "$REF:label-pro-secure-build/payload.enc" 2>/dev/null && git cat-file -e "$REF:label-pro-secure-build/source-pass.enc" 2>/dev/null; then
+              git show "$REF:label-pro-secure-build/payload.enc" > "$RUNNER_TEMP/payload.enc"
+              git show "$REF:label-pro-secure-build/source-pass.enc" > "$RUNNER_TEMP/source-pass.enc"
+              FOUND=1
+              break
+            fi
+            sleep 5
+          done
+          test "$FOUND" = 1
+
+      - name: Decrypt private Label Pro source in runner memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl pkeyutl -decrypt \
+            -inkey "$RUNNER_TEMP/source-private.pem" \
+            -in "$RUNNER_TEMP/source-pass.enc" \
+            -out "$RUNNER_TEMP/source-pass.txt" \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in "$RUNNER_TEMP/payload.enc" \
+            -out "$RUNNER_TEMP/label-pro-source.zip" \
+            -pass file:"$RUNNER_TEMP/source-pass.txt"
+          ACTUAL="$(sha256sum "$RUNNER_TEMP/label-pro-source.zip" | awk '{print $1}')"
+          test "$ACTUAL" = "$EXPECTED_SOURCE_SHA256"
+          mkdir -p "$RUNNER_TEMP/label-pro-src"
+          unzip -q "$RUNNER_TEMP/label-pro-source.zip" -d "$RUNNER_TEMP/label-pro-src"
+          rm -f "$RUNNER_TEMP/source-pass.txt" "$RUNNER_TEMP/source-pass.enc" "$RUNNER_TEMP/payload.enc" "$RUNNER_TEMP/source-private.pem"
+
+      - name: Install exact dependencies
+        working-directory: ${{ runner.temp }}/label-pro-src
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify dependency, source and label preservation gates
+        working-directory: ${{ runner.temp }}/label-pro-src
+        run: |
+          npx expo install --check
+          npx --yes expo-doctor@1.20.2
+          npm run test:static
+          node tests/ui-preservation-contracts.mjs
+          npm run verify:source
+          npm run typecheck
+
+      - name: Generate Android project
+        working-directory: ${{ runner.temp }}/label-pro-src
+        run: npx expo prebuild --clean --platform android --no-install
+
+      - name: Compile standalone arm64 release APK
+        working-directory: ${{ runner.temp }}/label-pro-src/android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleRelease -PreactNativeArchitectures=arm64-v8a
+
+      - name: Verify standalone APK
+        working-directory: ${{ runner.temp }}/label-pro-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find android/app/build/outputs/apk/release -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          BUNDLE_BYTES="$(unzip -p "$APK" assets/index.android.bundle | wc -c | tr -d '[:space:]')"
+          test "$BUNDLE_BYTES" -gt 0
+          APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/APKSIGNER_VERIFY.txt"
+          APKA="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -name apkanalyzer | sort -V | tail -n 1)"
+          APP_ID="$("$APKA" manifest application-id "$APK" | tr -d '\r\n')"
+          test "$APP_ID" = "$LABEL_PRO_ANDROID_APPLICATION_ID"
+          SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          printf '{\n  "status":"PASS",\n  "build_class":"UIUX_REMEDIATED_STANDALONE_INSTALLATION_TESTING",\n  "application_id":"%s",\n  "abi":"arm64-v8a",\n  "javascript_bundle_embedded":true,\n  "javascript_bundle_bytes":%s,\n  "metro_required":false,\n  "apk_signature_verified":true,\n  "apk_sha256":"%s",\n  "label_schema_geometry_preservation_gate":"PASS",\n  "production_signing":"NOT_CLEARED"\n}\n' "$APP_ID" "$BUNDLE_BYTES" "$SHA" > "$RUNNER_TEMP/LABEL_PRO_UIUX_APK_VERIFICATION.json"
+          cp "$APK" "$RUNNER_TEMP/Label-Pro-11.1.1-uiux-remediated-standalone-arm64.apk"
+
+      - name: Encrypt APK back to session-held recipient key
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl rand -hex 32 > "$RUNNER_TEMP/output-pass.txt"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -in "$RUNNER_TEMP/Label-Pro-11.1.1-uiux-remediated-standalone-arm64.apk" \
+            -out "$RUNNER_TEMP/Label-Pro-11.1.1-uiux-remediated-standalone-arm64.apk.enc" \
+            -pass file:"$RUNNER_TEMP/output-pass.txt"
+          git fetch origin "$GITHUB_REF_NAME" --quiet
+          git show "origin/$GITHUB_REF_NAME:label-pro-secure-build/output-public.pem" > "$RUNNER_TEMP/output-public.pem"
+          openssl pkeyutl -encrypt \
+            -pubin -inkey "$RUNNER_TEMP/output-public.pem" \
+            -in "$RUNNER_TEMP/output-pass.txt" \
+            -out "$RUNNER_TEMP/output-pass.enc" \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256
+          rm -f "$RUNNER_TEMP/output-pass.txt" "$RUNNER_TEMP/Label-Pro-11.1.1-uiux-remediated-standalone-arm64.apk"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Label-Pro-UIUX-Remediated-Encrypted-APK
+          path: |
+            ${{ runner.temp }}/Label-Pro-11.1.1-uiux-remediated-standalone-arm64.apk.enc
+            ${{ runner.temp }}/output-pass.enc
+            ${{ runner.temp }}/LABEL_PRO_UIUX_APK_VERIFICATION.json
+            ${{ runner.temp }}/APKSIGNER_VERIFY.txt
+          if-no-files-found: error
+          retention-days: 1
