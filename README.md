@@ -1,13 +1,11 @@
-# AI Console v1.4.0 — Isolated APK Build
+# AI Console v1.4.2 — EXEC002 APK Build
 
-Public isolated repository for GitHub Actions Android APK build of AI Console v1.4.0.
-
-Source extracted from the verified GitHub-ready package in the EAS Termux kit.
+Temporary public clean-room build repository for the remediated AI Console v1.4.2 Android APK.
 
 - Package: `com.nexarenew.aiconsole`
-- Version: 1.4.0 (versionCode 9)
-- Workflow: `.github/workflows/android-apk.yml` (preview debug-signed APK by default)
+- Version: `1.4.2`
+- Android versionCode: `11`
+- Build type: standalone release-mode APK with disposable preview signing certificate
+- Runtime payload SHA-256 (Base85): `e2a555aa5e631a5610927ccb57c22aebd9750cbc43f370ede16d367eb8dce50b`
 
-Trigger via Actions → AI Console Android APK CI → Run workflow (signing_mode=preview, run_emulator_checks=false).
-
-**Note:** Full source tree is being populated. For complete build use the SOURCE from the original ZIP or Consolev2 private mirror.
+The workflow reconstructs the EXEC002 runtime source, builds the APK, verifies package/version/signature/embedded JS/16-KB alignment, and publishes the verified APK as a GitHub Actions artifact.
