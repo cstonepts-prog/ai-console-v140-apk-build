@@ -7,6 +7,11 @@ on:
     paths:
       - '.github/workflows/label-pro-secure-build.yml'
       - 'label-pro-secure-build/start.txt'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/label-pro-secure-build.yml'
+      - 'label-pro-secure-build/**'
   workflow_dispatch:
 
 permissions:
@@ -21,6 +26,7 @@ jobs:
       NODE_ENV: production
       LABEL_PRO_ANDROID_APPLICATION_ID: net.nexarenew.labelpro
       EXPECTED_SOURCE_SHA256: cc566d7cc9af38e72f24d5a1e1efe3be9721d3cf7e97f9543d5d1968b14d8ae4
+      SOURCE_BRANCH: ${{ github.head_ref || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -53,8 +59,8 @@ jobs:
           set -euo pipefail
           FOUND=0
           for i in $(seq 1 240); do
-            git fetch origin "$GITHUB_REF_NAME" --quiet || true
-            REF="origin/$GITHUB_REF_NAME"
+            git fetch origin "$SOURCE_BRANCH" --quiet || true
+            REF="origin/$SOURCE_BRANCH"
             if git cat-file -e "$REF:label-pro-secure-build/payload.enc" 2>/dev/null && git cat-file -e "$REF:label-pro-secure-build/source-pass.enc" 2>/dev/null; then
               git show "$REF:label-pro-secure-build/payload.enc" > "$RUNNER_TEMP/payload.enc"
               git show "$REF:label-pro-secure-build/source-pass.enc" > "$RUNNER_TEMP/source-pass.enc"
@@ -136,8 +142,8 @@ jobs:
             -in "$RUNNER_TEMP/Label-Pro-11.1.1-uiux-remediated-standalone-arm64.apk" \
             -out "$RUNNER_TEMP/Label-Pro-11.1.1-uiux-remediated-standalone-arm64.apk.enc" \
             -pass file:"$RUNNER_TEMP/output-pass.txt"
-          git fetch origin "$GITHUB_REF_NAME" --quiet
-          git show "origin/$GITHUB_REF_NAME:label-pro-secure-build/output-public.pem" > "$RUNNER_TEMP/output-public.pem"
+          git fetch origin "$SOURCE_BRANCH" --quiet
+          git show "origin/$SOURCE_BRANCH:label-pro-secure-build/output-public.pem" > "$RUNNER_TEMP/output-public.pem"
           openssl pkeyutl -encrypt \
             -pubin -inkey "$RUNNER_TEMP/output-public.pem" \
             -in "$RUNNER_TEMP/output-pass.txt" \
