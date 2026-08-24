@@ -1,0 +1,2 @@
+EXEC002 R2 startup-fixed APK build trigger
+Fix: remove unsupported Hermes TextDecoder('latin1') startup construction
