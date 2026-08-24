@@ -1,0 +1,18 @@
+name: Label Pro public runner smoke
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Runner alive
+        run: |
+          echo "PUBLIC_RUNNER_OK"
+          uname -a
