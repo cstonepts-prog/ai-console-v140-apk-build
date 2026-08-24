@@ -1,0 +1,71 @@
+name: AI Console Android APK CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      signing_mode:
+        description: "preview uses debug signing; production requires configured GitHub Secrets"
+        type: choice
+        required: true
+        default: preview
+        options:
+          - preview
+          - production
+      run_emulator_checks:
+        description: "Run Android 16/API 36 cold-launch plus the dedicated 16-KB page-size/process-survival gates. Keep false for the first APK build; enable after preview APK generation is proven."
+        type: boolean
+        required: true
+        default: false
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+  JAVA_VERSION: "17"
+  ANDROID_API_LEVEL: "36"
+  ANDROID_BUILD_TOOLS_VERSION: "36.0.0"
+  ANDROID_16_SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64"
+  ANDROID_16_AVD_NAME: "ai-console-api36"
+  ANDROID_16K_SYSTEM_IMAGE: "system-images;android-35;google_apis_ps16k;x86_64"
+  ANDROID_16K_AVD_NAME: "ai-console-ps16k-api35"
+  PACKAGE_NAME: "com.nexarenew.aiconsole"
+  SIGNING_MODE: ${{ inputs.signing_mode || 'preview' }}
+  RUN_EMULATOR_CHECKS: ${{ inputs.run_emulator_checks || 'false' }}
+  PREVIEW_APK_NAME: "AI_Console_v1.4.0_preview-debug-signed.apk"
+  PRODUCTION_APK_NAME: "AI_Console_v1.4.0_production-release-signed.apk"
+  DIAGNOSTICS_DIR: "ci-diagnostics"
+
+jobs:
+  build-android-apk:
+    name: APK build, signing, diagnostics and Android/16-KB gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Repository checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      # NOTE: Full workflow body is truncated here for the isolated public seed. 
+      # The complete 24k workflow from Consolev2 / the ZIP must be used for a successful run.
+      # This seed allows the workflow to appear in the Actions tab.
+      - name: Placeholder - full source required
+        run: |
+          echo "This is a seed repository. Upload the full SOURCE/ from the AI_CONSOLE_V1_4_0_EAS_TERMUX_BUILD ZIP to enable the complete CI."
+          exit 1
