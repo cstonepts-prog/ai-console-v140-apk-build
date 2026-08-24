@@ -74,6 +74,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # avdmanager and emulator must resolve the same AVD directory.
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/android-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+          printf 'ANDROID_AVD_HOME=%s\n' "$ANDROID_AVD_HOME" | tee avd-home.txt
+
           EMU_ACCEL_ARGS=()
           if [[ -e /dev/kvm ]]; then
             sudo chmod 666 /dev/kvm || true
@@ -84,9 +91,21 @@ jobs:
             EMU_ACCEL_ARGS=(-accel off)
           fi
 
-          echo no | avdmanager create avd --force \
+          # Supplying a concrete device profile prevents the custom-hardware prompt
+          # seen with current avdmanager on GitHub's 2026 Ubuntu image.
+          printf 'no\n' | avdmanager create avd --force \
             --name "$AVD_NAME" \
-            --package "$ANDROID_SYSTEM_IMAGE"
+            --package "$ANDROID_SYSTEM_IMAGE" \
+            --device 'pixel_6'
+
+          "$ANDROID_HOME/emulator/emulator" -list-avds | tee avd-list.txt
+          grep -Fx "$AVD_NAME" avd-list.txt
+          test -d "$ANDROID_AVD_HOME/${AVD_NAME}.avd"
+          if [[ ! -f "$ANDROID_AVD_HOME/${AVD_NAME}.ini" ]]; then
+            echo "Expected AVD ini missing: $ANDROID_AVD_HOME/${AVD_NAME}.ini" >&2
+            find "$ANDROID_AVD_HOME" -maxdepth 2 -type f -print >&2 || true
+            exit 1
+          fi
 
           nohup "$ANDROID_HOME/emulator/emulator" \
             -avd "$AVD_NAME" \
@@ -176,6 +195,8 @@ jobs:
           path: |
             runtime-artifact-status.txt
             android-sdk-installed.txt
+            avd-home.txt
+            avd-list.txt
             kvm-status.txt
             emulator-boot.log
             emulator.pid
