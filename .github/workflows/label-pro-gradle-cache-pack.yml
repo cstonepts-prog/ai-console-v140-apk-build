@@ -1,0 +1,144 @@
+name: Label Pro Android dependency cache pack
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/label-pro-gradle-cache-pack.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cache-pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      CI: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.16.0'
+          package-manager-cache: false
+
+      - name: Create dependency-only Expo SDK 57 project
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/cache-app"
+          mkdir -p "$RUNNER_TEMP/cache-app/app"
+          cp label-pro-deps/package.json "$RUNNER_TEMP/cache-app/package.json"
+          cd "$RUNNER_TEMP/cache-app"
+          npm install --no-audit --no-fund
+          cat > app.json <<'JSON'
+          {"expo":{"name":"Label Pro Dependency Cache","slug":"label-pro-dependency-cache","version":"1.0.0","userInterfaceStyle":"light","plugins":["expo-router","expo-sqlite"],"android":{"package":"net.nexarenew.labelpro.cache"}}}
+          JSON
+          cat > app/_layout.tsx <<'EOF'
+          import { Stack } from 'expo-router';
+          export default function Layout(){ return <Stack screenOptions={{headerShown:false}}/>; }
+          EOF
+          cat > app/index.tsx <<'EOF'
+          import React from 'react';
+          import { Text, View } from 'react-native';
+          export default function Index(){ return <View><Text>Dependency cache only</Text></View>; }
+          EOF
+          npx expo prebuild --clean --platform android --no-install
+
+      - name: Warm Gradle and Android native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/cache-app"
+          cat >> android/app/build.gradle <<'EOF'
+
+          dependencies {
+            implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
+          }
+          EOF
+          cd android
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleRelease -PreactNativeArchitectures=arm64-v8a
+          ./gradlew --no-daemon :app:dependencies --configuration releaseRuntimeClasspath > "$RUNNER_TEMP/release-runtime-dependencies.txt"
+
+      - name: Record exact toolchain paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            echo "JAVA_HOME=$JAVA_HOME"
+            echo "GRADLE_USER_HOME=${GRADLE_USER_HOME:-$HOME/.gradle}"
+            echo "NDK_EXPECTED=27.1.12297006"
+            echo 'SDK directories:'
+            find "$ANDROID_SDK_ROOT" -maxdepth 2 -type d \( -path '*/build-tools/*' -o -path '*/platforms/*' -o -path '*/ndk/*' -o -name platform-tools -o -name licenses \) -print | sort
+          } | tee "$RUNNER_TEMP/toolchain-manifest.txt"
+
+      - name: Package portable Gradle cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          GH="${GRADLE_USER_HOME:-$HOME/.gradle}"
+          tar -C "$GH" -czf "$RUNNER_TEMP/label-pro-gradle-home.tar.gz" caches wrapper
+          sha256sum "$RUNNER_TEMP/label-pro-gradle-home.tar.gz" > "$RUNNER_TEMP/label-pro-gradle-home.tar.gz.sha256"
+
+      - name: Package minimal Android SDK core
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="$ANDROID_SDK_ROOT"
+          mkdir -p "$RUNNER_TEMP/sdk-pack"
+          for d in build-tools/36.0.0 build-tools/35.0.0 platforms/android-36 platform-tools licenses; do
+            if [ -e "$SDK/$d" ]; then
+              mkdir -p "$RUNNER_TEMP/sdk-pack/$(dirname "$d")"
+              cp -a "$SDK/$d" "$RUNNER_TEMP/sdk-pack/$d"
+            fi
+          done
+          tar -C "$RUNNER_TEMP/sdk-pack" -czf "$RUNNER_TEMP/label-pro-android-sdk-core.tar.gz" .
+          sha256sum "$RUNNER_TEMP/label-pro-android-sdk-core.tar.gz" > "$RUNNER_TEMP/label-pro-android-sdk-core.tar.gz.sha256"
+
+      - name: Package exact Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK="$ANDROID_SDK_ROOT/ndk/27.1.12297006"
+          test -d "$NDK"
+          tar -C "$ANDROID_SDK_ROOT/ndk" -czf "$RUNNER_TEMP/label-pro-android-ndk-27.1.12297006.tar.gz" 27.1.12297006
+          sha256sum "$RUNNER_TEMP/label-pro-android-ndk-27.1.12297006.tar.gz" > "$RUNNER_TEMP/label-pro-android-ndk-27.1.12297006.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Label-Pro-Gradle-Home-Cache
+          path: |
+            ${{ runner.temp }}/label-pro-gradle-home.tar.gz
+            ${{ runner.temp }}/label-pro-gradle-home.tar.gz.sha256
+            ${{ runner.temp }}/release-runtime-dependencies.txt
+            ${{ runner.temp }}/toolchain-manifest.txt
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Label-Pro-Android-SDK-Core
+          path: |
+            ${{ runner.temp }}/label-pro-android-sdk-core.tar.gz
+            ${{ runner.temp }}/label-pro-android-sdk-core.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Label-Pro-Android-NDK-27.1.12297006
+          path: |
+            ${{ runner.temp }}/label-pro-android-ndk-27.1.12297006.tar.gz
+            ${{ runner.temp }}/label-pro-android-ndk-27.1.12297006.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
