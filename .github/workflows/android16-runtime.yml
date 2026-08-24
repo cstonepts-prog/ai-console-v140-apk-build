@@ -22,7 +22,7 @@ env:
 jobs:
   android16-runtime:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 25
     steps:
       - name: Checkout runtime workflow
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -45,8 +45,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          curl --fail --location \
-            --retry 3 --retry-delay 2 \
+          curl --fail --location --retry 3 --retry-delay 2 \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -75,27 +74,57 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          EMU_ACCEL_ARGS=()
           if [[ -e /dev/kvm ]]; then
             sudo chmod 666 /dev/kvm || true
             ls -l /dev/kvm | tee kvm-status.txt
+            echo 'KVM_DEVICE=PRESENT' | tee -a kvm-status.txt
           else
-            echo 'KVM_DEVICE=ABSENT' | tee kvm-status.txt
+            echo 'KVM_DEVICE=ABSENT_ACCEL_OFF' | tee kvm-status.txt
+            EMU_ACCEL_ARGS=(-accel off)
           fi
+
           echo no | avdmanager create avd --force \
             --name "$AVD_NAME" \
             --package "$ANDROID_SYSTEM_IMAGE"
+
           nohup "$ANDROID_HOME/emulator/emulator" \
             -avd "$AVD_NAME" \
             -no-window \
             -no-audio \
             -no-boot-anim \
             -no-snapshot \
+            -no-snapshot-save \
             -gpu swiftshader_indirect \
+            -cores 2 \
+            -memory 4096 \
             -no-metrics \
+            "${EMU_ACCEL_ARGS[@]}" \
             > emulator-boot.log 2>&1 &
-          echo $! > emulator.pid
-          adb wait-for-device
-          timeout 600 bash -c 'until [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" == "1" ]]; do sleep 5; done'
+          EMU_PID=$!
+          echo "$EMU_PID" > emulator.pid
+
+          connected=0
+          for _ in $(seq 1 90); do
+            if ! kill -0 "$EMU_PID" 2>/dev/null; then
+              echo 'EMULATOR_PROCESS_EXITED_BEFORE_ADB' >&2
+              cat emulator-boot.log >&2 || true
+              exit 1
+            fi
+            if adb devices | awk 'NR>1 && /^emulator-[0-9]+[[:space:]]+device$/ {found=1} END{exit !found}'; then
+              connected=1
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$connected" -ne 1 ]]; then
+            echo 'ANDROID_16_ADB_DEVICE_TIMEOUT' >&2
+            adb devices -l || true
+            cat emulator-boot.log >&2 || true
+            exit 1
+          fi
+
+          timeout 480 bash -c 'until [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" == "1" ]]; do sleep 5; done'
           adb shell getprop ro.build.version.sdk | tr -d '\r' | tee emulator-api-level.txt
           grep -Fx '36' emulator-api-level.txt
           adb shell getprop ro.product.cpu.abi | tr -d '\r' | tee emulator-abi.txt
@@ -149,6 +178,7 @@ jobs:
             android-sdk-installed.txt
             kvm-status.txt
             emulator-boot.log
+            emulator.pid
             emulator-api-level.txt
             emulator-abi.txt
             runtime-boot-status.txt
