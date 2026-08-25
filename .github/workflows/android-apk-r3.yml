@@ -1,0 +1,217 @@
+name: AI Console v1.4.2 EXEC002 R3 Convergence
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '24'
+  JAVA_VERSION: '17'
+  ANDROID_API_LEVEL: '36'
+  ANDROID_BUILD_TOOLS_VERSION: '36.0.0'
+  PACKAGE_NAME: com.nexarenew.aiconsole
+  APP_VERSION: '1.4.2'
+  VERSION_CODE: '11'
+  APK_NAME: AI_Console_v1.4.2_EXEC002_R3_preview-release-signed.apk
+  PAYLOAD_B85_SHA256: 7acd0f1e3aac322d2670de5dd042c29d580aa9c8bd107634acd5ee0a0b7c7d44
+  PAYLOAD_XZ_SHA256: 529e6f197c0173188439f5c50009fac4e26f4b6193e7a1f2d7dca674768dad1d
+  CANONICAL_WORKFLOW_B85_SHA256: cc49042cccb58d4db959a5928f9e483d11cf302562465ff449d9ee8ea3937037
+  CANONICAL_WORKFLOW_SHA256: 16c6b1f46abd80bbc412cbe8eb0a5b80b4ee48006feeabaaa1317fb3923e535e
+
+jobs:
+  build-r3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout convergence payload
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Reconstruct exact remediated source and verification contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat build-input/part-*.b85 > /tmp/payload.b85
+          echo "${PAYLOAD_B85_SHA256}  /tmp/payload.b85" | sha256sum -c -
+          python3 - <<'PY'
+          import base64, pathlib
+          source = pathlib.Path('/tmp/payload.b85').read_bytes()
+          pathlib.Path('/tmp/payload.tar.xz').write_bytes(base64.b85decode(source))
+          PY
+          echo "${PAYLOAD_XZ_SHA256}  /tmp/payload.tar.xz" | sha256sum -c -
+          python3 - <<'PY'
+          import pathlib, tarfile
+          with tarfile.open('/tmp/payload.tar.xz','r:xz') as tf:
+              for member in tf.getmembers():
+                  name=member.name.replace('\\','/')
+                  if name.startswith('/') or '..' in pathlib.PurePosixPath(name).parts:
+                      raise SystemExit(f'unsafe archive member: {name}')
+              tf.extractall('.')
+          PY
+          test -s App.js
+          test -s package.json
+          test -s package-lock.json
+          test -s app.json
+          test -f src/documents/pdfTextExtract.mjs
+          cp runtime-patches/pdfTextExtract.mjs src/documents/pdfTextExtract.mjs
+          if grep -Eq "new[[:space:]]+TextDecoder\\(['\"]latin1['\"]" src/documents/pdfTextExtract.mjs; then
+            echo 'Unsupported Hermes Latin-1 TextDecoder constructor remains' >&2
+            exit 1
+          fi
+          echo "${CANONICAL_WORKFLOW_B85_SHA256}  verification-assets/android-apk-canonical-v142.yml.xz.b85" | sha256sum -c -
+          python3 - <<'PY'
+          import base64, hashlib, lzma, pathlib
+          encoded=pathlib.Path('verification-assets/android-apk-canonical-v142.yml.xz.b85').read_bytes()
+          plain=lzma.decompress(base64.b85decode(encoded))
+          pathlib.Path('.github/workflows/android-apk.yml').write_bytes(plain)
+          print('canonical-workflow-bytes', len(plain))
+          print('canonical-workflow-sha256', hashlib.sha256(plain).hexdigest())
+          PY
+          echo "${CANONICAL_WORKFLOW_SHA256}  .github/workflows/android-apk.yml" | sha256sum -c -
+          node - <<'NODE'
+          const pkg=require('./package.json'), lock=require('./package-lock.json'), app=require('./app.json').expo;
+          if(pkg.version!=='1.4.2'||lock.version!=='1.4.2'||lock.packages?.['']?.version!=='1.4.2') throw new Error('package identity drift');
+          if(app.version!=='1.4.2'||app.android?.versionCode!==11||app.android?.package!=='com.nexarenew.aiconsole') throw new Error('Android identity drift');
+          if(app.userInterfaceStyle!=='light'||!app.android.blockedPermissions?.includes('android.permission.SYSTEM_ALERT_WINDOW')) throw new Error('appearance/security contract drift');
+          console.log('R3_SOURCE_RECONSTRUCTION=PASS');
+          NODE
+
+      - name: Set up Node 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+        with:
+          packages: ''
+          accept-android-sdk-licenses: true
+
+      - name: Restore locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Execute full EXEC002 verification gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/*.test.mjs 2>&1 | tee npm-test.txt
+          if grep -Eiq '(^# skipped [1-9]|# SKIP|\bSKIP\b)' npm-test.txt; then
+            echo 'Release-critical test skip detected' >&2
+            exit 1
+          fi
+          node scripts/static-check.mjs
+          node scripts/ci-version-guard.mjs
+          node scripts/verify-runtime-contract.mjs
+          node --input-type=module - <<'NODE'
+          import { bytesToLatin1 } from './src/documents/pdfTextExtract.mjs';
+          const input=Uint8Array.from([0,65,127,128,255]);
+          const output=bytesToLatin1(input);
+          if(output.length!==input.length) throw new Error('Latin-1 length mismatch');
+          if(Array.from(output,c=>c.charCodeAt(0)).some((value,index)=>value!==input[index])) throw new Error('Latin-1 byte preservation mismatch');
+          console.log('HERMES_LATIN1_REGRESSION_CONTRACT=PASS');
+          NODE
+
+      - name: Install Android 36 prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-${ANDROID_API_LEVEL}" "build-tools;${ANDROID_BUILD_TOOLS_VERSION}"
+
+      - name: Generate Android project and prove SDK resolution
+        shell: bash
+        env:
+          EXPO_NO_GIT_STATUS: '1'
+        run: |
+          set -euo pipefail
+          npx expo prebuild --platform android --clean --no-install
+          test -x android/gradlew || chmod +x android/gradlew
+          grep -RInE 'compileSdk(?:Version)?[ =]+36|compileSdk[[:space:]]+36' android | tee gradle-compile-sdk-36.txt
+          grep -RInE 'targetSdk(?:Version)?[ =]+36|targetSdk[[:space:]]+36' android | tee gradle-target-sdk-36.txt
+
+      - name: Build release-mode APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd android && ./gradlew app:assembleRelease --no-daemon --max-workers=2 --stacktrace)
+          APK_SOURCE="$(find android/app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -1)"
+          test -n "$APK_SOURCE" && test -f "$APK_SOURCE"
+          echo "APK_SOURCE=$APK_SOURCE" >> "$GITHUB_ENV"
+
+      - name: Align and preview-sign APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          keytool -genkeypair -keystore "$RUNNER_TEMP/preview.jks" -storepass android -keypass android -alias preview -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=AI Console EXEC002 R3 Preview,OU=Preview,O=NexaRenew,C=GB" >/dev/null 2>&1
+          "$ZIPALIGN" -f -p 4 "$APK_SOURCE" "$RUNNER_TEMP/aligned.apk"
+          "$APKSIGNER" sign --ks "$RUNNER_TEMP/preview.jks" --ks-pass pass:android --key-pass pass:android --ks-key-alias preview --out "$APK_NAME" "$RUNNER_TEMP/aligned.apk"
+          "$APKSIGNER" verify --verbose --print-certs "$APK_NAME" | tee apk-signing.txt
+
+      - name: Verify APK identity bundle permissions and 16-KB compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)"
+          "$AAPT" dump badging "$APK_NAME" | tee apk-badging.txt
+          grep -F "package: name='${PACKAGE_NAME}'" apk-badging.txt
+          grep -F "versionName='${APP_VERSION}'" apk-badging.txt
+          grep -F "versionCode='${VERSION_CODE}'" apk-badging.txt
+          "$AAPT" dump permissions "$APK_NAME" | tee apk-permissions.txt
+          if grep -Fq 'android.permission.SYSTEM_ALERT_WINDOW' apk-permissions.txt; then echo 'SYSTEM_ALERT_WINDOW unexpectedly present' >&2; exit 1; fi
+          rm -rf apk-inspect && mkdir apk-inspect
+          unzip -q "$APK_NAME" -d apk-inspect
+          find apk-inspect -type f \( -name 'index.android.bundle' -o -name '*.hbc' -o -name '*.js' \) | tee apk-js-bundle-files.txt | grep -q .
+          "$ZIPALIGN" -c -P 16 -v 4 "$APK_NAME" | tee apk-zipalign-16k.txt
+          : > apk-native-elf-16k.txt
+          failures=0
+          while IFS= read -r so; do
+            rel="${so#apk-inspect/}"
+            case "$rel" in
+              lib/arm64-v8a/*|lib/x86_64/*)
+                while IFS= read -r align; do
+                  [ -n "$align" ] || continue
+                  dec=$((align))
+                  printf '%s LOAD_ALIGN=%s (%s)\n' "$rel" "$align" "$dec" | tee -a apk-native-elf-16k.txt
+                  if (( dec < 16384 )); then failures=1; fi
+                done < <(readelf -lW "$so" | awk '$1=="LOAD"{print $NF}')
+                ;;
+            esac
+          done < <(find apk-inspect/lib -type f -name '*.so' 2>/dev/null | sort || true)
+          if (( failures != 0 )); then echo 'APK_NATIVE_ELF_16K=FAIL' >&2; exit 1; fi
+          echo 'APK_NATIVE_ELF_16K=PASS' | tee -a apk-native-elf-16k.txt
+          sha256sum "$APK_NAME" | tee "$APK_NAME.sha256"
+          echo 'EXEC002_R3_APK_VERIFICATION=PASS' | tee exec002-r3-status.txt
+
+      - name: Upload verified R3 APK
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: AI-Console-v1.4.2-EXEC002-R3-APK
+          path: |
+            AI_Console_v1.4.2_EXEC002_R3_preview-release-signed.apk
+            AI_Console_v1.4.2_EXEC002_R3_preview-release-signed.apk.sha256
+            npm-test.txt
+            apk-signing.txt
+            apk-badging.txt
+            apk-permissions.txt
+            apk-zipalign-16k.txt
+            apk-native-elf-16k.txt
+            apk-js-bundle-files.txt
+            gradle-compile-sdk-36.txt
+            gradle-target-sdk-36.txt
+            exec002-r3-status.txt
+          if-no-files-found: error
+          retention-days: 14
