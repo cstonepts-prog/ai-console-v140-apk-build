@@ -1,0 +1,3 @@
+EXEC002 R3 convergence trigger
+Canonical source-contract fixture SHA-256: 16c6b1f46abd80bbc412cbe8eb0a5b80b4ee48006feeabaaa1317fb3923e535e
+Hermes Latin-1 remediation required.
