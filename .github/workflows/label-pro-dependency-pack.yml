@@ -1,0 +1,40 @@
+name: Label Pro SDK57 dependency pack
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'label-pro-deps/**'
+      - '.github/workflows/label-pro-dependency-pack.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.16.0'
+          package-manager-cache: false
+      - name: Install SDK 57 dependency graph only
+        working-directory: label-pro-deps
+        run: npm install --no-audit --no-fund --package-lock=false
+      - name: Verify core versions
+        working-directory: label-pro-deps
+        run: |
+          node -e "const p=require('./node_modules/expo/package.json'); if(p.version!=='57.0.9') process.exit(1); console.log('expo',p.version)"
+          ./node_modules/.bin/tsc --version
+      - name: Package node_modules
+        working-directory: label-pro-deps
+        run: tar -czf "$RUNNER_TEMP/label-pro-sdk57-node-modules.tar.gz" node_modules
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Label-Pro-SDK57-Node-Modules
+          path: ${{ runner.temp }}/label-pro-sdk57-node-modules.tar.gz
+          if-no-files-found: error
+          retention-days: 1
