@@ -49,4 +49,4 @@ The following classes of work must not be represented as completed without furth
 
 ## Evidence integrity note
 
-Build #4 is the current fully green CI checkpoint. Build #5's first attempt stopped at the remediation-patch SHA gate before Android compilation; that is an integrity-transfer failure, not evidence that the DataStore source itself failed to compile. The branch update replaces the mismatched stored patch with the exact intended Git blob while retaining the expected SHA-256 check.
+Build #4 is the current fully green CI checkpoint. Build #5's first attempt stopped at the remediation-patch SHA gate before Android compilation; that is an integrity-transfer failure, not evidence that the DataStore source itself failed to compile. The updated branch pins the build #5 patch to Git blob `198b079a9e6ba1cb68095a52f6ff1fa3d997392f` and records the patch SHA-256 during CI for inclusion in the build evidence artifact.
