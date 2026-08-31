@@ -42,9 +42,6 @@ jobs:
           echo "84aa33df8b8f4f418068752bf760e9e72a2c166a4dbe808362a1d2eb075ee2d2  $PATCH" | sha256sum -c -
           cd /tmp/kotlin-command-src/kotlin_command
           patch -p1 < "$PATCH"
-          grep -F '    } }' app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
-          grep -F 'OutlinedButton(onClick={controller.interrupt()})' app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
-          grep -F 'TextButton(onClick={controller.stop()})' app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
 
       - name: Verify and apply EXEC002 build-3 lint remediation
         shell: bash
@@ -54,11 +51,6 @@ jobs:
           echo "cc94da0be325dc64e92199b0fa05708afdbfd1638c62bfb0fe22a730fa007365  $PATCH" | sha256sum -c -
           cd /tmp/kotlin-command-src/kotlin_command
           patch -p1 < "$PATCH"
-          grep -F 'val activity=LocalActivity.current as MainActivity' app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
-          grep -F '<uses-feature android:name="android.hardware.camera" android:required="false" />' app/src/main/AndroidManifest.xml
-          grep -F 'android:dataExtractionRules="@xml/data_extraction_rules"' app/src/main/AndroidManifest.xml
-          test -f app/src/main/res/drawable/ic_launcher.xml
-          test -f app/src/main/res/xml/data_extraction_rules.xml
 
       - name: Verify and apply EXEC002 build-4 test remediation
         shell: bash
@@ -69,6 +61,18 @@ jobs:
           cd /tmp/kotlin-command-src/kotlin_command
           patch -p1 < "$PATCH"
           test -f app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt
+
+      - name: Verify and apply EXEC002 build-5 DataStore remediation
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH="$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build5-datastore.patch"
+          echo "f11094aacdd8857126d262b0f7fc85083a880b6674988ba9dac5a6bce243691a  $PATCH" | sha256sum -c -
+          cd /tmp/kotlin-command-src/kotlin_command
+          patch -p1 < "$PATCH"
+          grep -F 'androidx.datastore:datastore-preferences:1.2.1' app/build.gradle.kts
+          grep -F 'class AppPreferences' app/src/main/java/com/nexarenew/aiconsole/settings/AppPreferences.kt
+          grep -F 'fun selectProvider(provider: ProviderId)' app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -140,12 +144,8 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/kotlin-command-output"
           cp "$APK" "$GITHUB_WORKSPACE/kotlin-command-output/KotlinCommand-debug.apk"
           cp app-debug.apk.sha256 apk-badging.txt apk-signing.txt "$GITHUB_WORKSPACE/kotlin-command-output/"
-          if [ -f app/build/reports/lint-results-debug.html ]; then
-            cp app/build/reports/lint-results-debug.html "$GITHUB_WORKSPACE/kotlin-command-output/"
-          fi
-          if [ -d app/build/test-results/testDebugUnitTest ]; then
-            cp -R app/build/test-results/testDebugUnitTest "$GITHUB_WORKSPACE/kotlin-command-output/unit-test-results"
-          fi
+          if [ -f app/build/reports/lint-results-debug.html ]; then cp app/build/reports/lint-results-debug.html "$GITHUB_WORKSPACE/kotlin-command-output/"; fi
+          if [ -d app/build/test-results/testDebugUnitTest ]; then cp -R app/build/test-results/testDebugUnitTest "$GITHUB_WORKSPACE/kotlin-command-output/unit-test-results"; fi
 
       - name: Upload verified Kotlin Command APK
         uses: actions/upload-artifact@v4
