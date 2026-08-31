@@ -1,0 +1,25 @@
+--- a/app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
+@@ -128,7 +128,7 @@
+             }
+             documentJobs[inspected.id] = job
+         }
+-    }
++    } }
+     fun cancelDocumentExtraction(item: DocumentItem) { documentJobs.remove(item.id)?.cancel(); saveDocument(item.copy(extractionState = "cancelled", extractedText = null)) }
+     fun deleteDocument(item: DocumentItem) { documentJobs.remove(item.id)?.cancel(); repo.deleteDocument(item.id); _pendingDocumentIds.value = _pendingDocumentIds.value - item.id; _documents.value = repo.listDocuments(_workspace.value.id) }
+     fun toggleDocumentForNextMessage(documentId: String) {
+--- a/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+@@ -187,9 +187,9 @@
+         Row{
+             Button(onClick={activity.requestVoice({controller.listen()},{controller.markPermissionRequest()})},enabled=!busy){Icon(Icons.Default.Mic,null);Text("Listen")}
+             Spacer(Modifier.width(8.dp))
+-            OutlinedButton(onClick={controller.interrupt}){Text("Interrupt")}
++            OutlinedButton(onClick={controller.interrupt()}){Text("Interrupt")}
+             Spacer(Modifier.width(8.dp))
+-            TextButton(onClick={controller.stop}){Text("Stop")}
++            TextButton(onClick={controller.stop()}){Text("Stop")}
+         }
+         OutlinedTextField(transcript,{transcript=it},Modifier.fillMaxWidth(),label={Text("Transcript")})
+         Button(onClick={controller.markGenerating();vm.send(transcript)},enabled=transcript.isNotBlank()&&!busy){Text("Send to assistant")}

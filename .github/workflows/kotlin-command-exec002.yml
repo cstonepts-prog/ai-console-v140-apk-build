@@ -34,6 +34,18 @@ jobs:
           test -f /tmp/kotlin-command-src/kotlin_command/settings.gradle.kts
           test -f /tmp/kotlin-command-src/kotlin_command/app/build.gradle.kts
 
+      - name: Verify and apply EXEC002 build-2 remediation
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH="$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build2.patch"
+          echo "84aa33df8b8f4f418068752bf760e9e72a2c166a4dbe808362a1d2eb075ee2d2  $PATCH" | sha256sum -c -
+          cd /tmp/kotlin-command-src/kotlin_command
+          patch -p1 < "$PATCH"
+          grep -F '    } }' app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
+          grep -F 'OutlinedButton(onClick={controller.interrupt()})' app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+          grep -F 'TextButton(onClick={controller.stop()})' app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
