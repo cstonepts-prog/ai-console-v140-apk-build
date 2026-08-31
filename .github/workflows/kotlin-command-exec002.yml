@@ -67,7 +67,12 @@ jobs:
         run: |
           set -euo pipefail
           PATCH="$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build5-datastore.patch"
-          echo "f11094aacdd8857126d262b0f7fc85083a880b6674988ba9dac5a6bce243691a  $PATCH" | sha256sum -c -
+          EXPECTED_BLOB="198b079a9e6ba1cb68095a52f6ff1fa3d997392f"
+          ACTUAL_BLOB="$(git hash-object "$PATCH")"
+          echo "Expected build5 Git blob: $EXPECTED_BLOB"
+          echo "Actual build5 Git blob:   $ACTUAL_BLOB"
+          test "$EXPECTED_BLOB" = "$ACTUAL_BLOB"
+          sha256sum "$PATCH" | tee "$GITHUB_WORKSPACE/kotlin-command-exec002/BUILD5_PATCH_SHA256_RUNTIME.txt"
           cd /tmp/kotlin-command-src/kotlin_command
           patch -p1 < "$PATCH"
           grep -F 'androidx.datastore:datastore-preferences:1.2.1' app/build.gradle.kts
@@ -144,6 +149,7 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/kotlin-command-output"
           cp "$APK" "$GITHUB_WORKSPACE/kotlin-command-output/KotlinCommand-debug.apk"
           cp app-debug.apk.sha256 apk-badging.txt apk-signing.txt "$GITHUB_WORKSPACE/kotlin-command-output/"
+          cp "$GITHUB_WORKSPACE/kotlin-command-exec002/BUILD5_PATCH_SHA256_RUNTIME.txt" "$GITHUB_WORKSPACE/kotlin-command-output/"
           if [ -f app/build/reports/lint-results-debug.html ]; then cp app/build/reports/lint-results-debug.html "$GITHUB_WORKSPACE/kotlin-command-output/"; fi
           if [ -d app/build/test-results/testDebugUnitTest ]; then cp -R app/build/test-results/testDebugUnitTest "$GITHUB_WORKSPACE/kotlin-command-output/unit-test-results"; fi
 
@@ -164,6 +170,7 @@ jobs:
           cp -R /tmp/kotlin-command-src/kotlin_command/app/build/reports kotlin-command-diagnostics/ 2>/dev/null || true
           cp -R /tmp/kotlin-command-src/kotlin_command/app/build/outputs/logs kotlin-command-diagnostics/ 2>/dev/null || true
           cp -R /tmp/kotlin-command-src/kotlin_command/app/build/test-results kotlin-command-diagnostics/ 2>/dev/null || true
+          cp kotlin-command-exec002/BUILD5_PATCH_SHA256_RUNTIME.txt kotlin-command-diagnostics/ 2>/dev/null || true
 
       - name: Upload failure diagnostics
         if: failure()
