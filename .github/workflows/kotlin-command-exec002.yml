@@ -87,6 +87,20 @@ jobs:
           grep -F 'class AppPreferences' app/src/main/java/com/nexarenew/aiconsole/settings/AppPreferences.kt
           grep -F 'fun selectProvider(provider: ProviderId)' app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
 
+      - name: Apply DataStore compile fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH="$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build5-mainactivity-quote-fix.patch"
+          EXPECTED_BLOB="3525d560131583ff1f0aebf7745989112cbd747f"
+          ACTUAL_BLOB="$(git hash-object "$PATCH")"
+          echo "Expected compile-fix Git blob: $EXPECTED_BLOB"
+          echo "Actual compile-fix Git blob:   $ACTUAL_BLOB"
+          test "$EXPECTED_BLOB" = "$ACTUAL_BLOB"
+          cd /tmp/kotlin-command-src/kotlin_command
+          patch -p1 < "$PATCH"
+          grep -F 'chat?.provider?.label ?: "none"' app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
