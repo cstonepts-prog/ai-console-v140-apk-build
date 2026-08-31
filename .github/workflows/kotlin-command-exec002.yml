@@ -62,14 +62,6 @@ jobs:
           patch -p1 < "$PATCH"
           test -f app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt
 
-      - name: Upload post-build4 source snapshot
-        uses: actions/upload-artifact@v4
-        with:
-          name: kotlin-command-post-build4-source
-          path: /tmp/kotlin-command-src/kotlin_command/
-          if-no-files-found: error
-          retention-days: 2
-
       - name: Verify and apply EXEC002 build-5 DataStore remediation
         shell: bash
         run: |
@@ -100,6 +92,26 @@ jobs:
           cd /tmp/kotlin-command-src/kotlin_command
           patch -p1 < "$PATCH"
           grep -F 'chat?.provider?.label ?: "none"' app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+
+      - name: Verify and apply build-22 AI control parity tranche
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH="$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build6-ai-controls-pause.patch"
+          EXPECTED_BLOB="00ef6021304c6ba3597abdd5c96c5f303f188e62"
+          ACTUAL_BLOB="$(git hash-object "$PATCH")"
+          echo "Expected build6 Git blob: $EXPECTED_BLOB"
+          echo "Actual build6 Git blob:   $ACTUAL_BLOB"
+          test "$EXPECTED_BLOB" = "$ACTUAL_BLOB"
+          sha256sum "$PATCH" | tee "$GITHUB_WORKSPACE/kotlin-command-exec002/BUILD6_PATCH_SHA256_RUNTIME.txt"
+          cd /tmp/kotlin-command-src/kotlin_command
+          patch --dry-run -p1 < "$PATCH"
+          patch -p1 < "$PATCH"
+          grep -F 'const val MAX_TOKENS = 1_048_576' app/src/main/java/com/nexarenew/aiconsole/domain/OutputTokenPolicy.kt
+          grep -F 'fun pauseGeneration()' app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
+          grep -F 'fun resumeGeneration()' app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
+          grep -F 'const val VERSION = 11' app/src/main/java/com/nexarenew/aiconsole/data/AppDatabase.kt
+          grep -F 'outputTokenPolicyEnforcesBuild22CeilingAndSteps' app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -172,6 +184,7 @@ jobs:
           cp "$APK" "$GITHUB_WORKSPACE/kotlin-command-output/KotlinCommand-debug.apk"
           cp app-debug.apk.sha256 apk-badging.txt apk-signing.txt "$GITHUB_WORKSPACE/kotlin-command-output/"
           cp "$GITHUB_WORKSPACE/kotlin-command-exec002/BUILD5_PATCH_SHA256_RUNTIME.txt" "$GITHUB_WORKSPACE/kotlin-command-output/"
+          cp "$GITHUB_WORKSPACE/kotlin-command-exec002/BUILD6_PATCH_SHA256_RUNTIME.txt" "$GITHUB_WORKSPACE/kotlin-command-output/"
           if [ -f app/build/reports/lint-results-debug.html ]; then cp app/build/reports/lint-results-debug.html "$GITHUB_WORKSPACE/kotlin-command-output/"; fi
           if [ -d app/build/test-results/testDebugUnitTest ]; then cp -R app/build/test-results/testDebugUnitTest "$GITHUB_WORKSPACE/kotlin-command-output/unit-test-results"; fi
 
@@ -193,6 +206,7 @@ jobs:
           cp -R /tmp/kotlin-command-src/kotlin_command/app/build/outputs/logs kotlin-command-diagnostics/ 2>/dev/null || true
           cp -R /tmp/kotlin-command-src/kotlin_command/app/build/test-results kotlin-command-diagnostics/ 2>/dev/null || true
           cp kotlin-command-exec002/BUILD5_PATCH_SHA256_RUNTIME.txt kotlin-command-diagnostics/ 2>/dev/null || true
+          cp kotlin-command-exec002/BUILD6_PATCH_SHA256_RUNTIME.txt kotlin-command-diagnostics/ 2>/dev/null || true
 
       - name: Upload failure diagnostics
         if: failure()
