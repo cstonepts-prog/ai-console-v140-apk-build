@@ -1,0 +1,13 @@
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt b/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+index 8fde0bf2c8aa64bb614a096d14573092dedc566e..9e7322201815935f0d9810e95a44851dac9cb993 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+@@ -305,7 +305,7 @@ class MainActivity : ComponentActivity() {
+     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)){
+         Text("Provider Settings",style=MaterialTheme.typography.headlineSmall)
+         Row{ProviderId.entries.forEach{p->FilterChip(selected=provider==p,onClick={provider=p},label={Text(p.label)});Spacer(Modifier.width(8.dp))}}
+-        Row(verticalAlignment=Alignment.CenterVertically){Text("Current chat: ${chat?.provider?.label ?: \"none\"}",modifier=Modifier.weight(1f));Button(onClick={vm.selectProvider(provider)},enabled=chat!=null&&chat?.provider!=provider){Text("Use ${provider.label}")}}
++        Row(verticalAlignment=Alignment.CenterVertically){Text("Current chat: ${chat?.provider?.label ?: "none"}",modifier=Modifier.weight(1f));Button(onClick={vm.selectProvider(provider)},enabled=chat!=null&&chat?.provider!=provider){Text("Use ${provider.label}")}}
+         OutlinedTextField(key,{key=it},label={Text("API key")},visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+         Row{Button(onClick={vm.saveKey(provider,key);key="";saved=true}){Text("Store securely")};Spacer(Modifier.width(8.dp));OutlinedButton(onClick={vm.refreshModels(provider)},enabled=vm.hasKey(provider)){Text("Refresh models")}}
+         if(saved||vm.hasKey(provider))Text("Key stored in Android Keystore-backed encrypted storage.")
