@@ -74,8 +74,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PATCH="$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build5-datastore.patch"
-          EXPECTED_BLOB="198b079a9e6ba1cb68095a52f6ff1fa3d997392f"
+          PATCH="$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build5-datastore-v2.patch"
+          EXPECTED_BLOB="a0569d4427c01498aa02d221df44a6561ad76aa9"
           ACTUAL_BLOB="$(git hash-object "$PATCH")"
           echo "Expected build5 Git blob: $EXPECTED_BLOB"
           echo "Actual build5 Git blob:   $ACTUAL_BLOB"
