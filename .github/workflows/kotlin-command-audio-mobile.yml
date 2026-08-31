@@ -1,0 +1,146 @@
+name: Kotlin Command Audio Mobile Verification
+
+on:
+  push:
+    branches:
+      - kotlin-command-exec002
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-audio-mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Reconstruct authoritative source and apply remediations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat kotlin-command-exec002/xz/part-* > /tmp/source.b64
+          base64 --decode /tmp/source.b64 > /tmp/source.tar.xz
+          EXPECTED="$(awk '{print $1}' kotlin-command-exec002/XZ_SHA256)"
+          ACTUAL="$(sha256sum /tmp/source.tar.xz | awk '{print $1}')"
+          test "$EXPECTED" = "$ACTUAL"
+          mkdir -p /tmp/src
+          tar -xJf /tmp/source.tar.xz -C /tmp/src
+          cd /tmp/src/kotlin_command
+          patch -p1 < "$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build2.patch"
+          patch -p1 < "$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build3.patch"
+          patch -p1 < "$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build4-tests.patch"
+          patch -p1 < "$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build5-datastore-v2.patch"
+          patch -p1 < "$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build5-mainactivity-quote-fix.patch"
+
+      - name: Apply verified build6 AI controls and pause tranche
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode "$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build6-ai-controls-pause.patch.xz.b64" > /tmp/build6.patch.xz
+          echo "147ea389f202ac925832b482bc048994d0134fe1b8f5ac440cb56402e7ad2fd0  /tmp/build6.patch.xz" | sha256sum -c -
+          xz --decompress --stdout /tmp/build6.patch.xz > /tmp/build6.patch
+          echo "c7cc846029479ca617d8b52fcd724d99d1ce8b20d02334421fab197877602c0a  /tmp/build6.patch" | sha256sum -c -
+          cd /tmp/src/kotlin_command
+          patch --dry-run -p1 < /tmp/build6.patch
+          patch -p1 < /tmp/build6.patch
+
+      - name: Apply verified build7 STT and bubble playback tranche
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode "$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build7-audio-mobile.patch.xz.b64" > /tmp/build7.patch.xz
+          echo "82d4b378abf273315a9b8b582132bcfb07f873fa509c1ef4c5090ce68d55519b  /tmp/build7.patch.xz" | sha256sum -c -
+          xz --decompress --stdout /tmp/build7.patch.xz > /tmp/build7.patch
+          echo "23136f92c61169a21e257630be630fb1ab736ceb22105e3570aa826edcba423f  /tmp/build7.patch" | sha256sum -c -
+          cd /tmp/src/kotlin_command
+          patch --dry-run -p1 < /tmp/build7.patch
+          patch -p1 < /tmp/build7.patch
+          grep -F 'android.speech.RecognitionService' app/src/main/AndroidManifest.xml
+          grep -F 'android.intent.action.TTS_SERVICE' app/src/main/AndroidManifest.xml
+          grep -F 'SpeechRecognizer.createOnDeviceSpeechRecognizer' app/src/main/java/com/nexarenew/aiconsole/voice/VoiceController.kt
+          grep -F 'fun markPermissionDenied()' app/src/main/java/com/nexarenew/aiconsole/voice/VoiceController.kt
+          grep -F 'class ChatBubbleSpeaker' app/src/main/java/com/nexarenew/aiconsole/voice/ChatBubbleSpeaker.kt
+          grep -F 'Read response aloud' app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+          grep -F 'speechTextChunksLongResponsesWithinEngineLimit' app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt
+          sha256sum /tmp/build7.patch | tee build7-audio-mobile.patch.sha256
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API 36 and Build Tools 36.0.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Set up Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Android unit tests
+        working-directory: /tmp/src/kotlin_command
+        run: gradle --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Assert unit tests executed
+        working-directory: /tmp/src/kotlin_command
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULT="$(find app/build/test-results/testDebugUnitTest -type f -name '*.xml' -print -quit)"
+          test -n "$RESULT"
+          grep -Eq '<testsuite[^>]+tests="[1-9][0-9]*"' "$RESULT"
+
+      - name: Android lint
+        working-directory: /tmp/src/kotlin_command
+        run: gradle --no-daemon --stacktrace lintDebug
+
+      - name: Build debug APK
+        working-directory: /tmp/src/kotlin_command
+        run: gradle --no-daemon --stacktrace clean assembleDebug
+
+      - name: Verify APK and collect evidence
+        working-directory: /tmp/src/kotlin_command
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          test -s "$APK"
+          "$BT/aapt" dump badging "$APK" | tee apk-badging.txt
+          grep -F "package: name='com.nexarenew.aiconsole' versionCode='21' versionName='0.2.0-dev'" apk-badging.txt
+          "$BT/zipalign" -c -v 4 "$APK"
+          "$BT/apksigner" verify --verbose --print-certs "$APK" | tee apk-signing.txt
+          sha256sum "$APK" | tee app-debug.apk.sha256
+          mkdir -p "$GITHUB_WORKSPACE/audio-mobile-output"
+          cp "$APK" "$GITHUB_WORKSPACE/audio-mobile-output/KotlinCommand-audio-mobile-debug.apk"
+          cp apk-badging.txt apk-signing.txt app-debug.apk.sha256 build7-audio-mobile.patch.sha256 "$GITHUB_WORKSPACE/audio-mobile-output/"
+          if [ -f app/build/reports/lint-results-debug.html ]; then cp app/build/reports/lint-results-debug.html "$GITHUB_WORKSPACE/audio-mobile-output/"; fi
+          if [ -d app/build/test-results/testDebugUnitTest ]; then cp -R app/build/test-results/testDebugUnitTest "$GITHUB_WORKSPACE/audio-mobile-output/unit-test-results"; fi
+
+      - name: Upload verified audio-mobile APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-command-audio-mobile-debug-apk
+          path: audio-mobile-output/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload post-build7 source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-command-post-build7-source
+          path: /tmp/src/kotlin_command/
+          if-no-files-found: error
+          retention-days: 2
