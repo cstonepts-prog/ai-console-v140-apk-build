@@ -1,0 +1,207 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index f1f28ed8a91f9442f01a484ae1d5461dfae49218..a6ab1b505a158a6f0b492d86fcdcf56612946907 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -47,6 +47,7 @@ dependencies {
+     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.1")
+     implementation("androidx.navigation:navigation-compose:2.9.0")
+     implementation("androidx.work:work-runtime-ktx:2.10.1")
++    implementation("androidx.datastore:datastore-preferences:1.2.1")
+     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+     testImplementation("junit:junit:4.13.2")
+ }
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/KotlinCommandApp.kt b/app/src/main/java/com/nexarenew/aiconsole/KotlinCommandApp.kt
+index 56bcbaf07c627c7406a82cce4484dc476f543b75..a8bb4ca524b663617ce03dfbdabcf9e28abd6bb3 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/KotlinCommandApp.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/KotlinCommandApp.kt
+@@ -8,12 +8,15 @@ import com.nexarenew.aiconsole.security.SecureKeyStore
+ import com.nexarenew.aiconsole.security.PinManager
+ import com.nexarenew.aiconsole.tasks.OutboxRetryWorker
+ import com.nexarenew.aiconsole.tasks.ConnectivityRetryObserver
++import com.nexarenew.aiconsole.settings.AppPreferences
+ 
+ class KotlinCommandApp : Application() {
+     lateinit var repository: AppRepository
+         private set
+     lateinit var pinManager: PinManager
+         private set
++    lateinit var preferences: AppPreferences
++        private set
+     private lateinit var connectivityRetryObserver: ConnectivityRetryObserver
+     override fun onCreate() {
+         super.onCreate()
+@@ -21,6 +24,7 @@ class KotlinCommandApp : Application() {
+         val keys = SecureKeyStore(this)
+         repository = AppRepository(db, keys, ProviderClient())
+         pinManager = PinManager(this, keys)
++        preferences = AppPreferences(this)
+         OutboxRetryWorker.enqueuePeriodic(this)
+         connectivityRetryObserver = ConnectivityRetryObserver(this).also { it.start() }
+     }
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt b/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+index d46936cbb9757e86ac025d3feac720cb1ba00472..8fde0bf2c8aa64bb614a096d14573092dedc566e 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+@@ -49,7 +49,7 @@ class MainActivity : ComponentActivity() {
+     private var pendingVoiceStart:(()->Unit)?=null
+     private val micPermission=registerForActivityResult(ActivityResultContracts.RequestPermission()){granted->if(granted)pendingVoiceStart?.invoke();pendingVoiceStart=null}
+     override fun onCreate(savedInstanceState: Bundle?) {
+-        super.onCreate(savedInstanceState); enableEdgeToEdge(); vm=AppViewModel((application as KotlinCommandApp).repository)
++        super.onCreate(savedInstanceState); enableEdgeToEdge(); vm=AppViewModel((application as KotlinCommandApp).repository, (application as KotlinCommandApp).preferences)
+         setContent { MaterialTheme(colorScheme=lightColorScheme(primary=androidx.compose.ui.graphics.Color(0xFFB42318))) { PinGate((application as KotlinCommandApp).pinManager, lockGeneration) { CommandCentre(vm) } } }
+     }
+     override fun onStop() { super.onStop(); lockGeneration++ }
+@@ -305,6 +305,7 @@ class MainActivity : ComponentActivity() {
+     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)){
+         Text("Provider Settings",style=MaterialTheme.typography.headlineSmall)
+         Row{ProviderId.entries.forEach{p->FilterChip(selected=provider==p,onClick={provider=p},label={Text(p.label)});Spacer(Modifier.width(8.dp))}}
++        Row(verticalAlignment=Alignment.CenterVertically){Text("Current chat: ${chat?.provider?.label ?: \"none\"}",modifier=Modifier.weight(1f));Button(onClick={vm.selectProvider(provider)},enabled=chat!=null&&chat?.provider!=provider){Text("Use ${provider.label}")}}
+         OutlinedTextField(key,{key=it},label={Text("API key")},visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+         Row{Button(onClick={vm.saveKey(provider,key);key="";saved=true}){Text("Store securely")};Spacer(Modifier.width(8.dp));OutlinedButton(onClick={vm.refreshModels(provider)},enabled=vm.hasKey(provider)){Text("Refresh models")}}
+         if(saved||vm.hasKey(provider))Text("Key stored in Android Keystore-backed encrypted storage.")
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/settings/AppPreferences.kt b/app/src/main/java/com/nexarenew/aiconsole/settings/AppPreferences.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..5720f86d6dd07b96fd8e460ae6d9b5b1a75febc6
+--- /dev/null
++++ b/app/src/main/java/com/nexarenew/aiconsole/settings/AppPreferences.kt
+@@ -0,0 +1,41 @@
++package com.nexarenew.aiconsole.settings
++
++import android.content.Context
++import androidx.datastore.preferences.core.edit
++import androidx.datastore.preferences.core.stringPreferencesKey
++import androidx.datastore.preferences.preferencesDataStore
++import com.nexarenew.aiconsole.model.ProviderId
++import kotlinx.coroutines.flow.Flow
++import kotlinx.coroutines.flow.catch
++import kotlinx.coroutines.flow.map
++import java.io.IOException
++
++private val Context.kotlinCommandDataStore by preferencesDataStore(name = "kotlin_command_settings")
++
++class AppPreferences(context: Context) {
++    private val store = context.applicationContext.kotlinCommandDataStore
++
++    val lastWorkspaceId: Flow<String?> = value(LAST_WORKSPACE)
++    val preferredProvider: Flow<String?> = value(PREFERRED_PROVIDER)
++
++    fun preferredModel(provider: ProviderId): Flow<String?> = value(modelKey(provider))
++
++    suspend fun setLastWorkspaceId(id: String) = set(LAST_WORKSPACE, id)
++    suspend fun setPreferredProvider(provider: ProviderId) = set(PREFERRED_PROVIDER, provider.wire)
++    suspend fun setPreferredModel(provider: ProviderId, model: String) = set(modelKey(provider), model)
++
++    private fun value(key: androidx.datastore.preferences.core.Preferences.Key<String>): Flow<String?> =
++        store.data.catch { error -> if (error is IOException) emit(androidx.datastore.preferences.core.emptyPreferences()) else throw error }
++            .map { it[key] }
++
++    private suspend fun set(key: androidx.datastore.preferences.core.Preferences.Key<String>, value: String) {
++        store.edit { prefs -> prefs[key] = value }
++    }
++
++    private fun modelKey(provider: ProviderId) = stringPreferencesKey("preferred_model_${provider.wire}")
++
++    companion object {
++        private val LAST_WORKSPACE = stringPreferencesKey("last_workspace_id")
++        private val PREFERRED_PROVIDER = stringPreferencesKey("preferred_provider")
++    }
++}
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt b/app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
+index d6373d83fba3d8d5ed1fdff2582a4329aa15d583..8e418b155b4c29a48ea02e34a0b4668af5491bdd 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
+@@ -16,6 +16,7 @@ import com.nexarenew.aiconsole.domain.ProviderErrorPolicy
+ import com.nexarenew.aiconsole.backup.BackupManager
+ import com.nexarenew.aiconsole.backup.PromptTransferManager
+ import com.nexarenew.aiconsole.migration.LegacyImporter
++import com.nexarenew.aiconsole.settings.AppPreferences
+ import android.content.ContentResolver
+ import android.net.Uri
+ import kotlinx.coroutines.CancellationException
+@@ -23,11 +24,11 @@ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.Job
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.first
+ import kotlinx.coroutines.launch
+ import kotlinx.coroutines.withContext
+ 
+-class AppViewModel(private val repo: AppRepository) : ViewModel() {
+-    init { repo.ensureBuiltInSkills() }
++class AppViewModel(private val repo: AppRepository, private val preferences: AppPreferences) : ViewModel() {
+     private val _workspaces = MutableStateFlow(repo.listWorkspaces().ifEmpty { listOf(repo.ensureDefaultWorkspace()) }); val workspaces: StateFlow<List<Workspace>> = _workspaces
+     private val _workspace = MutableStateFlow(_workspaces.value.first()); val workspace: StateFlow<Workspace> = _workspace
+     private val _chats = MutableStateFlow(repo.listChats(_workspace.value.id)); val chats: StateFlow<List<Chat>> = _chats
+@@ -51,6 +52,26 @@ class AppViewModel(private val repo: AppRepository) : ViewModel() {
+     private val _guardrailMessage = MutableStateFlow<String?>(null); val guardrailMessage: StateFlow<String?> = _guardrailMessage
+     private val _pendingDocumentIds = MutableStateFlow<List<String>>(emptyList()); val pendingDocumentIds: StateFlow<List<String>> = _pendingDocumentIds
+     private val _outbox = MutableStateFlow(repo.listOutbox()); val outbox: StateFlow<List<OutboxRequest>> = _outbox
++    private val _preferredProvider = MutableStateFlow(ProviderId.OPENROUTER)
++    private val _preferredModels = MutableStateFlow(mapOf(
++        ProviderId.OPENROUTER to "openrouter/auto",
++        ProviderId.TOGETHER to "moonshotai/Kimi-K2.5",
++    ))
++
++    init {
++        repo.ensureBuiltInSkills()
++        viewModelScope.launch {
++            preferences.preferredProvider.first()?.let { saved -> runCatching { ProviderId.fromWire(saved) }.getOrNull() }?.let { _preferredProvider.value = it }
++            ProviderId.entries.forEach { provider ->
++                preferences.preferredModel(provider).first()?.takeIf(String::isNotBlank)?.let { model ->
++                    _preferredModels.value = _preferredModels.value + (provider to model)
++                }
++            }
++            preferences.lastWorkspaceId.first()?.let { id -> _workspaces.value.firstOrNull { it.id == id } }?.let { saved ->
++                if (saved.id != _workspace.value.id) selectWorkspace(saved, persist = false)
++            }
++        }
++    }
+ 
+     private var generationJob: Job? = null
+     private var cancellation: CancellationToken? = null
+@@ -61,9 +82,10 @@ class AppViewModel(private val repo: AppRepository) : ViewModel() {
+         val w = Workspace(name = name.trim())
+         repo.upsertWorkspace(w); _workspaces.value = repo.listWorkspaces(); selectWorkspace(w)
+     }
+-    fun selectWorkspace(w: Workspace) {
++    fun selectWorkspace(w: Workspace, persist: Boolean = true) {
+         if (_busy.value) stopGeneration()
+         _workspace.value = w; _chats.value = repo.listChats(w.id); _chat.value = _chats.value.firstOrNull(); _messages.value = _chat.value?.let { repo.messages(it.id) }.orEmpty(); _memories.value = repo.listMemory(w.id); _documents.value = repo.listDocuments(w.id); _pendingDocumentIds.value = emptyList()
++        if (persist) viewModelScope.launch { preferences.setLastWorkspaceId(w.id) }
+     }
+     fun updateWorkspace(w: Workspace) { repo.upsertWorkspace(w.copy(updatedAt = System.currentTimeMillis())); _workspaces.value = repo.listWorkspaces(); if(_workspace.value.id==w.id)_workspace.value=_workspaces.value.first{it.id==w.id} }
+     fun deleteWorkspace(w: Workspace): Boolean {
+@@ -73,9 +95,22 @@ class AppViewModel(private val repo: AppRepository) : ViewModel() {
+     fun renameChat(c: Chat, title: String) { if(title.isBlank())return; val updated=c.copy(title=title.trim(),updatedAt=System.currentTimeMillis());repo.upsertChat(updated);_chats.value=repo.listChats(_workspace.value.id);if(_chat.value?.id==c.id)_chat.value=updated }
+     fun deleteChat(c: Chat) { if(_busy.value&&_chat.value?.id==c.id)stopGeneration();repo.deleteChat(c.id);_chats.value=repo.listChats(_workspace.value.id);if(_chat.value?.id==c.id){_chat.value=_chats.value.firstOrNull();_messages.value=_chat.value?.let{repo.messages(it.id)}.orEmpty()} }
+ 
+-    fun newChat(provider: ProviderId = ProviderId.OPENROUTER) {
+-        val c = Chat(workspaceId = _workspace.value.id, provider = provider, model = if (provider == ProviderId.TOGETHER) "moonshotai/Kimi-K2.5" else "openrouter/auto")
++    fun newChat() = newChat(_preferredProvider.value)
++    fun newChat(provider: ProviderId) {
++        val model = _preferredModels.value.getValue(provider)
++        val c = Chat(workspaceId = _workspace.value.id, provider = provider, model = model)
+         repo.upsertChat(c); _chat.value = c; _messages.value = emptyList(); _chats.value = repo.listChats(_workspace.value.id)
++        _preferredProvider.value = provider
++        viewModelScope.launch { preferences.setPreferredProvider(provider) }
++    }
++
++    fun selectProvider(provider: ProviderId) {
++        val current = _chat.value ?: run { newChat(provider); return }
++        val model = _preferredModels.value.getValue(provider)
++        val updated = current.copy(provider = provider, model = model, updatedAt = System.currentTimeMillis())
++        repo.upsertChat(updated); _chat.value = updated; _chats.value = repo.listChats(_workspace.value.id)
++        _preferredProvider.value = provider
++        viewModelScope.launch { preferences.setPreferredProvider(provider) }
+     }
+ 
+     fun selectChat(c: Chat) { if (_busy.value) stopGeneration(); _chat.value = c; _messages.value = repo.messages(c.id) }
+@@ -146,6 +181,8 @@ class AppViewModel(private val repo: AppRepository) : ViewModel() {
+         if (current.provider != provider) return
+         val updated = current.copy(model = model, updatedAt = System.currentTimeMillis())
+         repo.upsertChat(updated); _chat.value = updated; _chats.value = repo.listChats(_workspace.value.id)
++        _preferredModels.value = _preferredModels.value + (provider to model)
++        viewModelScope.launch { preferences.setPreferredModel(provider, model) }
+     }
+     fun saveTask(task: ScheduledTask) { repo.upsertTask(task); _tasks.value = repo.listTasks() }
+     fun deleteTask(task: ScheduledTask) { repo.deleteTask(task.id); _tasks.value = repo.listTasks() }
