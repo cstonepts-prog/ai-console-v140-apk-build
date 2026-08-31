@@ -1,0 +1,349 @@
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt b/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+index 9e7322201815935f0d9810e95a44851dac9cb993..35222cf8361ccf7e830139214844036785db4e23 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/MainActivity.kt
+@@ -86,12 +86,13 @@ class MainActivity : ComponentActivity() {
+ }
+ @Composable fun ChatScreen(vm:AppViewModel,onOpenVoice:()->Unit={}){
+-    val msgs by vm.messages.collectAsState();val busy by vm.busy.collectAsState();val err by vm.error.collectAsState();var input by remember{mutableStateOf("")}
++    val msgs by vm.messages.collectAsState();val busy by vm.busy.collectAsState();val paused by vm.paused.collectAsState();val err by vm.error.collectAsState();var input by remember{mutableStateOf("")}
+     Column(Modifier.fillMaxSize().padding(12.dp)){
+         Row(verticalAlignment=Alignment.CenterVertically){Text("Conversation",style=MaterialTheme.typography.headlineSmall,modifier=Modifier.weight(1f));IconButton(onClick=onOpenVoice){Icon(Icons.Default.Mic,"Voice")}}
+         if(vm.guardrailMessage.collectAsState().value!=null)Text(vm.guardrailMessage.collectAsState().value!!,color=MaterialTheme.colorScheme.error)
++        if(paused)Text("Generation paused • incoming response text is buffered",color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.labelMedium)
+         err?.let{Text(it,color=MaterialTheme.colorScheme.error)}
+         LazyColumn(Modifier.weight(1f).fillMaxWidth()){items(msgs,key={it.id}){m->Card(Modifier.fillMaxWidth().padding(vertical=4.dp)){Column(Modifier.padding(10.dp)){Text(m.role.uppercase(),style=MaterialTheme.typography.labelSmall);Text(m.content);if(m.status!=MessageStatus.COMPLETED)Text(m.status.name.lowercase(),style=MaterialTheme.typography.labelSmall)}}}}
+-        Row(verticalAlignment=Alignment.CenterVertically){OutlinedTextField(input,{input=it},Modifier.weight(1f),placeholder={Text("Message")},enabled=!busy);IconButton(onClick={val x=input;input="";vm.send(x)},enabled=!busy&&input.isNotBlank()){Icon(Icons.Default.Send,"Send")};if(busy)IconButton(onClick={vm.stopGeneration()}){Icon(Icons.Default.Stop,"Stop generation")}}
++        Row(verticalAlignment=Alignment.CenterVertically){OutlinedTextField(input,{input=it},Modifier.weight(1f),placeholder={Text("Message")},enabled=!busy);IconButton(onClick={val x=input;input="";vm.send(x)},enabled=!busy&&input.isNotBlank()){Icon(Icons.Default.Send,"Send")};if(busy){IconButton(onClick={if(paused)vm.resumeGeneration() else vm.pauseGeneration()}){Icon(if(paused)Icons.Default.PlayArrow else Icons.Default.Pause,if(paused)"Resume generation" else "Pause generation")};IconButton(onClick={vm.stopGeneration()}){Icon(Icons.Default.Stop,"Stop generation")}}}
+     }
+ }
+@@ -292,6 +293,8 @@ class MainActivity : ComponentActivity() {
+     var budgetDaily by remember{mutableStateOf(false)}
+     var budgetWorkspace by remember{mutableStateOf(false)}
+     var budgetHardStop by remember{mutableStateOf(false)}
++    var temperatureText by remember(chat?.id,chat?.temperature){mutableStateOf((chat?.temperature ?: 0.7).toString())}
++    var maxTokensText by remember(chat?.id,chat?.maxTokens){mutableStateOf((chat?.maxTokens ?: 4096).toString())}
+     var expanded by remember{mutableStateOf(false)}
+     var backupStatus by remember{mutableStateOf<String?>(null)}
+     var replaceRestore by remember{mutableStateOf(false)}
+@@ -313,6 +316,11 @@ class MainActivity : ComponentActivity() {
+         Text("Model catalogue (${models[provider].orEmpty().size})",style=MaterialTheme.typography.titleMedium)
+         Box{OutlinedButton(onClick={expanded=true},enabled=models[provider].orEmpty().isNotEmpty()&&chat?.provider==provider){Text(chat?.takeIf{it.provider==provider}?.model?:"Choose model")};DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){models[provider].orEmpty().take(100).forEach{m->DropdownMenuItem(text={Text(m.name)},onClick={vm.selectModel(provider,m.id);expanded=false})}}}
+         Spacer(Modifier.height(12.dp))
++        Text("Current chat AI controls",style=MaterialTheme.typography.titleMedium)
++        OutlinedTextField(temperatureText,{temperatureText=it.filter{ch->ch.isDigit()||ch=='.'}},label={Text("Temperature 0.0–2.0")},modifier=Modifier.fillMaxWidth())
++        OutlinedTextField(maxTokensText,{maxTokensText=it.filter{ch->ch.isDigit()}},label={Text("Maximum output tokens • 256-step • ceiling 1,048,576")},modifier=Modifier.fillMaxWidth())
++        Button(onClick={vm.updateChatControls(temperatureText.toDoubleOrNull()?:0.7,maxTokensText.toIntOrNull()?:4096);temperatureText=(vm.chat.value?.temperature?:0.7).toString();maxTokensText=(vm.chat.value?.maxTokens?:4096).toString()},enabled=chat!=null){Text("Save chat controls")}
++        Spacer(Modifier.height(12.dp))
+         Text("Usage",style=MaterialTheme.typography.titleMedium);Text("Events ${usage.events} • input ${usage.inputTokens} • output ${usage.outputTokens} • total ${usage.totalTokens} • known cost USD ${"%.4f".format(usage.costUsd)}")
+         guardrailMessage?.let{Text(it,color=if(it.contains("hard stop",true))MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)}
+         Text("Usage guardrails",style=MaterialTheme.typography.titleSmall)
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/backup/BackupManager.kt b/app/src/main/java/com/nexarenew/aiconsole/backup/BackupManager.kt
+index 5ad3c5d23190408351c0a61fbb9cacbc9af0b6a5..17ead9c089c148c24fd09d587c29645540b7e411 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/backup/BackupManager.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/backup/BackupManager.kt
+@@ -85,7 +85,7 @@ class BackupManager(private val repo: AppRepository) {
+             put("formatVersion", 1)
+             put("exportedAt", System.currentTimeMillis())
+             put("workspaces", JSONArray(workspaces.map { JSONObject().put("id",it.id).put("name",it.name).put("systemPrompt",it.systemPrompt).put("createdAt",it.createdAt).put("updatedAt",it.updatedAt) }))
+-            put("chats", JSONArray(chats.map { JSONObject().put("id",it.id).put("workspaceId",it.workspaceId).put("title",it.title).put("provider",it.provider.wire).put("model",it.model).put("updatedAt",it.updatedAt) }))
++            put("chats", JSONArray(chats.map { JSONObject().put("id",it.id).put("workspaceId",it.workspaceId).put("title",it.title).put("provider",it.provider.wire).put("model",it.model).put("updatedAt",it.updatedAt).put("temperature",it.temperature).put("maxTokens",it.maxTokens) }))
+             put("messages", JSONArray(messages.map { JSONObject().put("id",it.id).put("chatId",it.chatId).put("role",it.role).put("content",it.content).put("createdAt",it.createdAt).put("status",it.status.name).put("provider",it.provider?.wire).put("model",it.model) }))
+             put("memory", JSONArray(memories.map { JSONObject().put("id",it.id).put("workspaceId",it.workspaceId).put("content",it.content).put("priority",it.priority).put("enabled",it.enabled).put("createdAt",it.createdAt).put("updatedAt",it.updatedAt) }))
+             put("documents", JSONArray(documents.map { JSONObject().put("id",it.id).put("workspaceId",it.workspaceId).put("uri",it.uri).put("displayName",it.displayName).put("mimeType",it.mimeType).put("sizeBytes",it.sizeBytes).put("sha256",it.sha256).put("extractionState",it.extractionState).put("extractedText",it.extractedText).put("createdAt",it.createdAt).put("updatedAt",it.updatedAt) }))
+@@ -103,7 +103,7 @@ class BackupManager(private val repo: AppRepository) {
+         fun arr(name:String)=root.optJSONArray(name)?:JSONArray()
+         return BackupData(
+             arr("workspaces").objects().map{Workspace(it.getString("id"),it.getString("name"),it.optString("systemPrompt"),it.optLong("createdAt"),it.optLong("updatedAt"))},
+-            arr("chats").objects().map{Chat(it.getString("id"),it.getString("workspaceId"),it.getString("title"),ProviderId.fromWire(it.getString("provider")),it.getString("model"),it.optLong("updatedAt"))},
++            arr("chats").objects().map{Chat(it.getString("id"),it.getString("workspaceId"),it.getString("title"),ProviderId.fromWire(it.getString("provider")),it.getString("model"),it.optLong("updatedAt"),it.optDouble("temperature",0.7).coerceIn(0.0,2.0),com.nexarenew.aiconsole.domain.OutputTokenPolicy.normalize(it.optInt("maxTokens",4096)))},
+             arr("messages").objects().map{Message(it.getString("id"),it.getString("chatId"),it.getString("role"),it.getString("content"),it.optLong("createdAt"),runCatching{MessageStatus.valueOf(it.optString("status","COMPLETED"))}.getOrDefault(MessageStatus.COMPLETED),it.optString("provider").takeIf(String::isNotBlank)?.let(ProviderId::fromWire),it.optString("model").takeIf(String::isNotBlank))},
+             arr("memory").objects().map{MemoryItem(it.getString("id"),it.getString("workspaceId"),it.getString("content"),it.optInt("priority"),it.optBoolean("enabled",true),it.optLong("createdAt"),it.optLong("updatedAt"))},
+             arr("documents").objects().map{DocumentItem(it.getString("id"),it.getString("workspaceId"),it.getString("uri"),it.getString("displayName"),it.getString("mimeType"),it.optLong("sizeBytes"),it.optString("sha256"),it.optString("extractionState","ready"),it.optString("extractedText").takeIf(String::isNotBlank),it.optLong("createdAt"),it.optLong("updatedAt"))},
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/data/AppDatabase.kt b/app/src/main/java/com/nexarenew/aiconsole/data/AppDatabase.kt
+index 1835d75f4cd01ca5538f19999f97756952914ec5..e3de95c080e1b76dc7c58153c2688057d5711582 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/data/AppDatabase.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/data/AppDatabase.kt
+@@ -4,7 +4,7 @@ import android.database.sqlite.SQLiteDatabase
+ import android.database.sqlite.SQLiteOpenHelper
+ 
+ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "kotlin_command.db", null, VERSION) {
+-    companion object { const val VERSION = 10 }
++    companion object { const val VERSION = 11 }
+ 
+     override fun onConfigure(db: SQLiteDatabase) {
+         super.onConfigure(db)
+@@ -26,6 +26,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "kotlin_command.
+         createV8Tables(db)
+         createV9Tables(db)
+         createV10Tables(db)
++        createV11Tables(db)
+     }
+ 
+     private fun createCoreTables(db: SQLiteDatabase) {
+@@ -84,6 +85,11 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "kotlin_command.
+         db.execSQL("CREATE INDEX IF NOT EXISTS idx_outbox_retry ON outbox(status, next_retry_at)")
+     }
+ 
++    private fun createV11Tables(db: SQLiteDatabase) {
++        runCatching { db.execSQL("ALTER TABLE chats ADD COLUMN temperature REAL NOT NULL DEFAULT 0.7") }
++        runCatching { db.execSQL("ALTER TABLE chats ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 4096") }
++    }
++
+     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+         db.beginTransaction()
+         try {
+@@ -100,6 +106,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "kotlin_command.
+             if (oldVersion < 8) createV8Tables(db)
+             if (oldVersion < 9) createV9Tables(db)
+             if (oldVersion < 10) createV10Tables(db)
++            if (oldVersion < 11) createV11Tables(db)
+             db.setTransactionSuccessful()
+         } finally { db.endTransaction() }
+     }
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/data/AppRepository.kt b/app/src/main/java/com/nexarenew/aiconsole/data/AppRepository.kt
+index 99cb0fab58316637121813e98c7a08b38a48cfa4..837a3ea51623aa291aa3532721860c762939e0c7 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/data/AppRepository.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/data/AppRepository.kt
+@@ -35,12 +35,12 @@ class AppRepository(
+     fun upsertWorkspace(w: Workspace) { db.writableDatabase.insertWithOnConflict("workspaces", null, cv { put("id", w.id); put("name", w.name); put("system_prompt",w.systemPrompt); put("created_at",w.createdAt); put("updated_at",w.updatedAt) }, SQLiteDatabase.CONFLICT_REPLACE) }
+ 
+     fun listChats(workspaceId: String): List<Chat> = query(
+-        "SELECT id,workspace_id,title,provider,model,updated_at FROM chats WHERE workspace_id=? ORDER BY updated_at DESC", arrayOf(workspaceId),
+-    ) { c -> Chat(c.s(0), c.s(1), c.s(2), ProviderId.fromWire(c.s(3)), c.s(4), c.l(5)) }
++        "SELECT id,workspace_id,title,provider,model,updated_at,temperature,max_tokens FROM chats WHERE workspace_id=? ORDER BY updated_at DESC", arrayOf(workspaceId),
++    ) { c -> Chat(c.s(0), c.s(1), c.s(2), ProviderId.fromWire(c.s(3)), c.s(4), c.l(5), c.getDouble(6), c.getInt(7)) }
+ 
+     fun upsertChat(chat: Chat) {
+         db.writableDatabase.insertWithOnConflict("chats", null, cv {
+-            put("id", chat.id); put("workspace_id", chat.workspaceId); put("title", chat.title); put("provider", chat.provider.wire); put("model", chat.model); put("updated_at", chat.updatedAt)
++            put("id", chat.id); put("workspace_id", chat.workspaceId); put("title", chat.title); put("provider", chat.provider.wire); put("model", chat.model); put("updated_at", chat.updatedAt); put("temperature", chat.temperature.coerceIn(0.0, 2.0)); put("max_tokens", com.nexarenew.aiconsole.domain.OutputTokenPolicy.normalize(chat.maxTokens))
+         }, SQLiteDatabase.CONFLICT_REPLACE)
+     }
+@@ -65,7 +65,7 @@ class AppRepository(
+         cancellation: CancellationToken,
+         onDelta: (String) -> Unit,
+         onUsage: (ProviderUsage?) -> Unit,
+-    ) = client.stream(chat.provider, keys.get("api.${chat.provider.wire}"), chat.model, all, .7, 4096, cancellation, onDelta, onUsage)
++    ) = client.stream(chat.provider, keys.get("api.${chat.provider.wire}"), chat.model, all, chat.temperature, chat.maxTokens, cancellation, onDelta, onUsage)
+ 
+     fun setApiKey(provider: ProviderId, value: String) { keys.put("api.${provider.wire}", value.trim()) }
+     fun hasApiKey(provider: ProviderId): Boolean = !keys.get("api.${provider.wire}").isNullOrBlank()
+@@ -194,8 +194,8 @@ class AppRepository(
+     fun messageById(id:String): Message? = query("SELECT id,chat_id,role,content,created_at,status,provider,model FROM messages WHERE id=?", arrayOf(id)) { c -> Message(c.s(0),c.s(1),c.s(2),c.s(3),c.l(4),MessageStatus.valueOf(c.s(5)),c.nullableS(6)?.let(ProviderId::fromWire),c.nullableS(7)) }.firstOrNull()
+     fun attachmentDocumentsForMessage(messageId:String): List<DocumentItem> = query("SELECT d.id,d.workspace_id,d.uri,d.display_name,d.mime_type,d.size_bytes,d.sha256,d.extraction_state,d.extracted_text,d.created_at,d.updated_at FROM attachments a JOIN documents d ON d.id=a.document_id WHERE a.message_id=? ORDER BY a.created_at", arrayOf(messageId)) { c -> DocumentItem(c.s(0),c.s(1),c.s(2),c.s(3),c.s(4),c.l(5),c.s(6),c.s(7),c.nullableS(8),c.l(9),c.l(10)) }
+     private fun chatById(id:String): Chat? = query(
+-        "SELECT id,workspace_id,title,provider,model,updated_at FROM chats WHERE id=?", arrayOf(id),
+-    ) { c -> Chat(c.s(0),c.s(1),c.s(2),ProviderId.fromWire(c.s(3)),c.s(4),c.l(5)) }.firstOrNull()
++        "SELECT id,workspace_id,title,provider,model,updated_at,temperature,max_tokens FROM chats WHERE id=?", arrayOf(id),
++    ) { c -> Chat(c.s(0),c.s(1),c.s(2),ProviderId.fromWire(c.s(3)),c.s(4),c.l(5),c.getDouble(6),c.getInt(7)) }.firstOrNull()
+ 
+     fun executeScheduledTask(task:ScheduledTask): TaskRun {
+         val started=System.currentTimeMillis(); val run=TaskRun(taskId=task.id,startedAt=started,status="RUNNING"); upsertTaskRun(run)
+@@ -205,7 +205,7 @@ class AppRepository(
+         val requestMessages=messages(chat.id)
+         var reply=""; var providerUsage:ProviderUsage?=null
+         val requestKey=RequestIdentity.create(task.workspaceId,chat.id,chat.provider.wire,chat.model,user.id)
+-        client.stream(chat.provider, keys.get("api.${chat.provider.wire}"), chat.model, requestMessages, .7, 4096, CancellationToken(), { reply += it }, { providerUsage = it })
++        client.stream(chat.provider, keys.get("api.${chat.provider.wire}"), chat.model, requestMessages, chat.temperature, chat.maxTokens, CancellationToken(), { reply += it }, { providerUsage = it })
+         val assistant=Message(chatId=chat.id,role="assistant",content=reply.ifBlank{"(No text returned)"},provider=chat.provider,model=chat.model)
+         upsertMessage(assistant); recordUsage(UsageEvent(chatId=chat.id,messageId=assistant.id,provider=chat.provider,model=chat.model,inputTokens=providerUsage?.inputTokens,outputTokens=providerUsage?.outputTokens,totalTokens=providerUsage?.totalTokens,costUsd=providerUsage?.costUsd,outcome="completed"))
+         return run.copy(finishedAt=System.currentTimeMillis(),status="COMPLETED",message="Completed",chatId=chat.id,messageId=assistant.id,requestKey=requestKey).also(::upsertTaskRun)
+@@ -228,8 +228,10 @@ class AppRepository(
+         val cancellation=CancellationToken()
+         val messages=request.messages.map{Message(chatId=request.chatId,role=it.role,content=it.content)}
+         var reply=""; var providerUsage:ProviderUsage?=null
+-        client.stream(request.provider, keys.get("api.${request.provider.wire}"), request.model, messages, .7, 4096, cancellation, { delta -> reply += delta; onDelta(delta) }, { providerUsage = it })
++        val persisted = chatById(request.chatId)
++        val temperature = persisted?.temperature ?: 0.7
++        val maxTokens = persisted?.maxTokens ?: 4096
++        client.stream(request.provider, keys.get("api.${request.provider.wire}"), request.model, messages, temperature, maxTokens, cancellation, { delta -> reply += delta; onDelta(delta) }, { providerUsage = it })
+         val assistant=Message(chatId=request.chatId,role="assistant",content=reply.ifBlank{"(No text returned)"},provider=request.provider,model=request.model)
+         upsertMessage(assistant)
+         recordUsage(UsageEvent(chatId=request.chatId,messageId=assistant.id,provider=request.provider,model=request.model,inputTokens=providerUsage?.inputTokens,outputTokens=providerUsage?.outputTokens,totalTokens=providerUsage?.totalTokens,costUsd=providerUsage?.costUsd,outcome="completed"))
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/domain/OutputTokenPolicy.kt b/app/src/main/java/com/nexarenew/aiconsole/domain/OutputTokenPolicy.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5ee2f492c3ae3969b421fe5fa8def93d46374a9
+--- /dev/null
++++ b/app/src/main/java/com/nexarenew/aiconsole/domain/OutputTokenPolicy.kt
+@@ -0,0 +1,12 @@
++package com.nexarenew.aiconsole.domain
++
++object OutputTokenPolicy {
++    const val MIN_TOKENS = 256
++    const val MAX_TOKENS = 1_048_576
++    const val STEP_TOKENS = 256
++
++    fun normalize(value: Int): Int {
++        val clamped = value.coerceIn(MIN_TOKENS, MAX_TOKENS)
++        return ((clamped / STEP_TOKENS) * STEP_TOKENS).coerceAtLeast(MIN_TOKENS)
++    }
++}
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/migration/LegacyImporter.kt b/app/src/main/java/com/nexarenew/aiconsole/migration/LegacyImporter.kt
+index 5c6a1ea682638586c5d4b9f375f507767d13e4b5..efbd732077f80757322c3990541c9a179d97af71 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/migration/LegacyImporter.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/migration/LegacyImporter.kt
+@@ -98,7 +98,7 @@ class LegacyImporter(private val repo: AppRepository) {
+             val workspaceId = raw.optString("workspaceId", raw.optString("workspace_id", defaultWorkspace.id)).takeIf(workspaceIds::contains) ?: defaultWorkspace.id
+             val provider = LegacyImportPolicy.canonicalProvider(raw.optString("provider", "openrouter")).let(ProviderId::fromWire)
+             val model = raw.optString("model", if (provider == ProviderId.TOGETHER) "moonshotai/Kimi-K2.5" else "openrouter/auto")
+-            chats += Chat(id, workspaceId, raw.optString("title", "Imported chat"), provider, model, raw.optLong("updatedAt", now))
++            chats += Chat(id, workspaceId, raw.optString("title", "Imported chat"), provider, model, raw.optLong("updatedAt", now), raw.optDouble("temperature", 0.7).coerceIn(0.0, 2.0), com.nexarenew.aiconsole.domain.OutputTokenPolicy.normalize(raw.optInt("maxTokens", 4096)))
+         }
+         val chatIds = chats.mapTo(mutableSetOf()) { it.id }
+ 
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/model/Models.kt b/app/src/main/java/com/nexarenew/aiconsole/model/Models.kt
+index 7d8ef15186a90088f730f8d4f40b28ddf049e6c2..34c9013fb15a4934d65bb928ec50d92d57d50d4d 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/model/Models.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/model/Models.kt
+@@ -23,6 +23,8 @@ data class Chat(
+     val provider: ProviderId = ProviderId.OPENROUTER,
+     val model: String = "openrouter/auto",
+     val updatedAt: Long = System.currentTimeMillis(),
++    val temperature: Double = 0.7,
++    val maxTokens: Int = 4096,
+ )
+ 
+ data class Message(
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/network/ProviderClient.kt b/app/src/main/java/com/nexarenew/aiconsole/network/ProviderClient.kt
+index 10f01763084f7d93667ccd1bf9acc3afe8be2a9d..e3a5f6787ee3008a61531f1246f149701406a667 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/network/ProviderClient.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/network/ProviderClient.kt
+@@ -74,7 +74,7 @@ class ProviderClient {
+             put("model", model)
+             put("stream", true)
+             put("temperature", temperature.coerceIn(0.0, 2.0))
+-            put("max_tokens", maxTokens.coerceIn(1, 131_072))
++            put("max_tokens", com.nexarenew.aiconsole.domain.OutputTokenPolicy.normalize(maxTokens))
+             put("messages", JSONArray(messages.map { JSONObject().put("role", it.role).put("content", it.content) }))
+         }
+         val request = Request.Builder().url(contract.chatUrl).headers(headers).post(body.toString().toRequestBody(jsonType)).build()
+diff --git a/app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt b/app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
+index 8e418b155b4c29a48ea02e34a0b4668af5491bdd..c49c1634309e007331471cab2b3b4d98e79955bc 100644
+--- a/app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
++++ b/app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
+@@ -22,6 +22,7 @@ import android.net.Uri
+ import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.Job
++import kotlinx.coroutines.delay
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.StateFlow
+ import kotlinx.coroutines.flow.first
+@@ -52,6 +53,7 @@ class AppViewModel(private val repo: AppRepository, private val preferences: App
+     private val _guardrailMessage = MutableStateFlow<String?>(null); val guardrailMessage: StateFlow<String?> = _guardrailMessage
+     private val _pendingDocumentIds = MutableStateFlow<List<String>>(emptyList()); val pendingDocumentIds: StateFlow<List<String>> = _pendingDocumentIds
+     private val _outbox = MutableStateFlow(repo.listOutbox()); val outbox: StateFlow<List<OutboxRequest>> = _outbox
++    private val _paused = MutableStateFlow(false); val paused: StateFlow<Boolean> = _paused
+     private val _preferredProvider = MutableStateFlow(ProviderId.OPENROUTER)
+     private val _preferredModels = MutableStateFlow(mapOf(
+         ProviderId.OPENROUTER to "openrouter/auto",
+@@ -75,6 +77,9 @@ class AppViewModel(private val repo: AppRepository, private val preferences: App
+ 
+     private var generationJob: Job? = null
+     private var cancellation: CancellationToken? = null
++    private var activeStreamingId: String? = null
++    private var activeStreamingChat: Chat? = null
++    @Volatile private var activeReplySnapshot: String = ""
+     private val documentJobs = mutableMapOf<String, Job>()
+ 
+     fun createWorkspace(name: String) {
+@@ -184,6 +189,11 @@ class AppViewModel(private val repo: AppRepository, private val preferences: App
+         viewModelScope.launch { preferences.setPreferredModel(provider, model) }
+     }
++    fun updateChatControls(temperature: Double, maxTokens: Int) {
++        val current = _chat.value ?: return
++        val updated = current.copy(temperature = temperature.coerceIn(0.0, 2.0), maxTokens = com.nexarenew.aiconsole.domain.OutputTokenPolicy.normalize(maxTokens), updatedAt = System.currentTimeMillis())
++        repo.upsertChat(updated); _chat.value = updated; _chats.value = repo.listChats(_workspace.value.id)
++    }
+     fun saveTask(task: ScheduledTask) { repo.upsertTask(task); _tasks.value = repo.listTasks() }
+     fun deleteTask(task: ScheduledTask) { repo.deleteTask(task.id); _tasks.value = repo.listTasks() }
+     fun latestTaskRun(taskId: String): TaskRun? = repo.taskRuns(taskId).firstOrNull()
+@@ -213,7 +223,19 @@ class AppViewModel(private val repo: AppRepository, private val preferences: App
+         _workspaces.value = repo.listWorkspaces().ifEmpty { listOf(repo.ensureDefaultWorkspace()) }; selectWorkspace(_workspaces.value.first()); _prompts.value=repo.listPrompts(); _skills.value=repo.listSkills(); _tasks.value=repo.listTasks(); _usageSummary.value=repo.usageSummary(); _usageBudgets.value=repo.listUsageBudgets(); refreshGuardrails()
+     }
+ 
+-    fun stopGeneration() { cancellation?.cancel(); generationJob?.cancel() }
++    fun pauseGeneration() { if (_busy.value) _paused.value = true }
++    fun resumeGeneration() {
++        if (!_busy.value || !_paused.value) return
++        _paused.value = false
++        val c = activeStreamingChat
++        val id = activeStreamingId
++        val reply = activeReplySnapshot
++        if (c != null && id != null && reply.isNotEmpty()) {
++            repo.upsertMessage(Message(id, c.id, "assistant", reply, status = MessageStatus.STREAMING, provider = c.provider, model = c.model))
++            _messages.value = repo.messages(c.id)
++        }
++    }
++    fun stopGeneration() { _paused.value = false; cancellation?.cancel(); generationJob?.cancel() }
+ 
+     private fun providerMessages(chatId: String): List<Message> {
+         val prompt = _selectedPromptId.value?.let { id -> _prompts.value.firstOrNull { it.id == id } }
+@@ -230,7 +252,7 @@ class AppViewModel(private val repo: AppRepository, private val preferences: App
+         val currentChat = _chat.value
+         val contextLength = currentChat?.let { chat -> _models.value[chat.provider].orEmpty().firstOrNull { it.id == chat.model }?.contextLength }
+-        val assembled = ContextAssembler.assemble(parts, ContextBudgetPolicy.maxContextChars(contextLength, 4096))
++        val assembled = ContextAssembler.assemble(parts, ContextBudgetPolicy.maxContextChars(contextLength, currentChat?.maxTokens ?: 4096))
+         _lastContextKinds.value = assembled.includedKinds
+         _lastContextTruncated.value = assembled.truncated
+         val history = repo.messages(chatId)
+@@ -255,19 +277,28 @@ class AppViewModel(private val repo: AppRepository, private val preferences: App
+         _messages.value = repo.messages(c.id)
+         _busy.value = true; _error.value = null
+         val token = CancellationToken().also { cancellation = it }
++        _paused.value = false
+         generationJob = viewModelScope.launch {
+             var reply = ""
+             val streamingId = "stream-${user.id}"
++            activeStreamingId = streamingId
++            activeStreamingChat = c
++            activeReplySnapshot = ""
+             val requestKey = RequestIdentity.create(_workspace.value.id, c.id, c.provider.wire, c.model, user.id)
+             var providerUsage: com.nexarenew.aiconsole.network.ProviderUsage? = null
+             try {
+                 withContext(Dispatchers.IO) {
+                     repo.stream(c, requestMessages, token, { delta ->
+                         reply += delta
+-                        repo.upsertMessage(Message(streamingId, c.id, "assistant", reply, status = MessageStatus.STREAMING, provider = c.provider, model = c.model))
+-                        _messages.value = repo.messages(c.id)
++                        activeReplySnapshot = reply
++                        if (!_paused.value) {
++                            repo.upsertMessage(Message(streamingId, c.id, "assistant", reply, status = MessageStatus.STREAMING, provider = c.provider, model = c.model))
++                            _messages.value = repo.messages(c.id)
++                        }
+                     }, { usage -> providerUsage = usage })
+                 }
++                while (_paused.value && !token.isCancelled) delay(50)
++                if (token.isCancelled) throw GenerationCancelledException()
+                 val final = Message(streamingId, c.id, "assistant", reply.ifBlank { "(No text returned)" }, status = MessageStatus.COMPLETED, provider = c.provider, model = c.model)
+                 repo.upsertMessage(final)
+                 repo.findOutboxByKey(requestKey)?.let { repo.deleteOutbox(it.id) }; refreshOutbox()
+@@ -295,7 +326,7 @@ class AppViewModel(private val repo: AppRepository, private val preferences: App
+                 _messages.value = repo.messages(c.id)
+                 _error.value = t.message ?: t.javaClass.simpleName
+             } finally {
+-                cancellation = null; generationJob = null; _busy.value = false
++                cancellation = null; generationJob = null; activeStreamingId = null; activeStreamingChat = null; activeReplySnapshot = ""; _paused.value = false; _busy.value = false
+             }
+         }
+     }
+diff --git a/app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt b/app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt
+index c56afeb847563c4268361044a683644844f07816..d111dd178b139e81f41d33a8296381565c30621c 100644
+--- a/app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt
++++ b/app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt
+@@ -147,6 +147,14 @@ class PureDomainTest {
+         assertEquals("openrouter", LegacyImportPolicy.canonicalProvider("OpenRouter"))
+     }
+ 
++    @Test fun outputTokenPolicyEnforcesBuild22CeilingAndSteps() {
++        assertEquals(256, OutputTokenPolicy.normalize(1))
++        assertEquals(256, OutputTokenPolicy.normalize(511))
++        assertEquals(4096, OutputTokenPolicy.normalize(4097))
++        assertEquals(1_048_576, OutputTokenPolicy.normalize(Int.MAX_VALUE))
++        assertEquals(0, OutputTokenPolicy.normalize(65_536) % 256)
++    }
++
+     @Test fun usageGuardrailsWarnAndBlockAtConfiguredThresholds() {
+         val warning = UsageGuardrailPolicy.evaluate(
+             events = listOf(
