@@ -60,6 +60,16 @@ jobs:
           test -f app/src/main/res/drawable/ic_launcher.xml
           test -f app/src/main/res/xml/data_extraction_rules.xml
 
+      - name: Verify and apply EXEC002 build-4 test remediation
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH="$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build4-tests.patch"
+          echo "14ee409155ff2ad274305d92e6b3f09e6a1cbfec5cf41c4d7c55735861409759  $PATCH" | sha256sum -c -
+          cd /tmp/kotlin-command-src/kotlin_command
+          patch -p1 < "$PATCH"
+          test -f app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -96,6 +106,16 @@ jobs:
         working-directory: /tmp/kotlin-command-src/kotlin_command
         run: gradle --no-daemon --stacktrace testDebugUnitTest
 
+      - name: Assert Android unit tests executed
+        working-directory: /tmp/kotlin-command-src/kotlin_command
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULT="$(find app/build/test-results/testDebugUnitTest -type f -name '*.xml' -print -quit)"
+          test -n "$RESULT"
+          grep -Eq '<testsuite[^>]+tests="[1-9][0-9]*"' "$RESULT"
+          echo "JUnit result: $RESULT"
+
       - name: Android lint
         working-directory: /tmp/kotlin-command-src/kotlin_command
         run: gradle --no-daemon --stacktrace lintDebug
@@ -123,6 +143,9 @@ jobs:
           if [ -f app/build/reports/lint-results-debug.html ]; then
             cp app/build/reports/lint-results-debug.html "$GITHUB_WORKSPACE/kotlin-command-output/"
           fi
+          if [ -d app/build/test-results/testDebugUnitTest ]; then
+            cp -R app/build/test-results/testDebugUnitTest "$GITHUB_WORKSPACE/kotlin-command-output/unit-test-results"
+          fi
 
       - name: Upload verified Kotlin Command APK
         uses: actions/upload-artifact@v4
@@ -140,6 +163,7 @@ jobs:
           mkdir -p kotlin-command-diagnostics
           cp -R /tmp/kotlin-command-src/kotlin_command/app/build/reports kotlin-command-diagnostics/ 2>/dev/null || true
           cp -R /tmp/kotlin-command-src/kotlin_command/app/build/outputs/logs kotlin-command-diagnostics/ 2>/dev/null || true
+          cp -R /tmp/kotlin-command-src/kotlin_command/app/build/test-results kotlin-command-diagnostics/ 2>/dev/null || true
 
       - name: Upload failure diagnostics
         if: failure()

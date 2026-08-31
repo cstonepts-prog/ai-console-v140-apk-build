@@ -1,0 +1,172 @@
+--- /dev/null
++++ b/app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt
+@@ -0,0 +1,169 @@
++package com.nexarenew.aiconsole.domain
++
++import org.junit.Assert.*
++import org.junit.Test
++
++class PureDomainTest {
++    @Test fun providerContractsRemainIsolatedAndCorrect() {
++        assertEquals("https://openrouter.ai/api/v1/chat/completions", ProviderContracts.openRouter.chatUrl)
++        assertEquals("https://api.together.ai/v1/chat/completions", ProviderContracts.together.chatUrl)
++        assertEquals("Kotlin Command", ProviderContracts.openRouter.extraHeaders["X-Title"])
++        assertTrue(ProviderContracts.together.extraHeaders.isEmpty())
++    }
++
++    @Test fun sseParserHandlesFragmentedAndMultilineEvents() {
++        val parser = SseParser()
++        val events = mutableListOf<String>()
++        events += parser.feed("data: {\"a\":")
++        events += parser.feed("1}\n\ndata: hel")
++        events += parser.feed("lo\r\n\r\n")
++        events += parser.finish()
++        assertEquals(listOf("{\"a\":1}", "hello"), events)
++
++        val multi = SseParser()
++        assertEquals(listOf("first\nsecond"), multi.feed("data: first\ndata: second\n\n"))
++    }
++
++    @Test fun contextAssemblyIsDeterministicAndBudgeted() {
++        val result = ContextAssembler.assemble(
++            listOf(
++                ContextPart("conversation", "conversation", 10),
++                ContextPart("system", "system", 100),
++                ContextPart("memory", "memory", 50),
++            ),
++            100,
++        )
++        assertEquals(listOf("system", "memory", "conversation"), result.includedKinds)
++        assertFalse(result.truncated)
++
++        val intelligence = ContextAssembler.assemble(
++            listOf(
++                ContextPart("workspace-memory", "memory", 70),
++                ContextPart("skill:one", "skill", 90),
++                ContextPart("prompt:one", "prompt", 100),
++            ),
++            100,
++        )
++        assertEquals(listOf("prompt:one", "skill:one", "workspace-memory"), intelligence.includedKinds)
++        assertTrue(intelligence.text.indexOf("prompt") < intelligence.text.indexOf("skill"))
++        assertTrue(intelligence.text.indexOf("skill") < intelligence.text.indexOf("memory"))
++
++        val tiny = ContextAssembler.assemble(listOf(ContextPart("x", "abcdefghijklmnopqrstuvwxyz", 1)), 20)
++        assertTrue(tiny.truncated)
++        assertTrue(tiny.text.length <= 20)
++    }
++
++    @Test fun requestIdentityIsStableAndProviderSensitive() {
++        val id1 = RequestIdentity.create("w", "c", "OpenRouter", "m", "msg")
++        val id2 = RequestIdentity.create("w", "c", "openrouter", "m", "msg")
++        val id3 = RequestIdentity.create("w", "c", "together", "m", "msg")
++        assertEquals(id1, id2)
++        assertNotEquals(id1, id3)
++        assertTrue(id1.matches(Regex("[0-9a-f]{64}")))
++    }
++
++    @Test fun fullVoiceStateMachineCoversHappyInterruptRetryAndStop() {
++        var state = VoiceState.IDLE
++        listOf(
++            VoiceEvent.START,
++            VoiceEvent.PERMISSION_GRANTED,
++            VoiceEvent.SPEECH_ENDED,
++            VoiceEvent.TRANSCRIPT_READY,
++            VoiceEvent.GENERATION_READY,
++            VoiceEvent.SPEECH_FINISHED,
++        ).forEach { state = VoiceStateMachine.reduce(state, it) }
++        assertEquals(VoiceState.IDLE, state)
++        state = VoiceStateMachine.reduce(VoiceState.SPEAKING, VoiceEvent.INTERRUPT)
++        assertEquals(VoiceState.INTERRUPTED, state)
++        assertEquals(VoiceState.IDLE, VoiceStateMachine.reduce(state, VoiceEvent.RETRY))
++        assertEquals(VoiceState.STOPPED, VoiceStateMachine.reduce(VoiceState.GENERATING, VoiceEvent.STOP))
++    }
++
++    @Test fun cancellationTokenFiresAttachedCallback() {
++        val token = CancellationToken()
++        var callback = false
++        token.attach { callback = true }
++        assertFalse(token.isCancelled)
++        token.cancel()
++        assertTrue(token.isCancelled)
++        assertTrue(callback)
++    }
++
++    @Test fun fileSafetyAndAttachmentContextEnforceLimits() {
++        assertEquals("report_final.pdf", FileSafety.safeDisplayName(" report/final.pdf "))
++        FileSafety.requireAllowedSize(1024)
++        assertTrue(runCatching { FileSafety.requireAllowedSize(60L * 1024 * 1024) }.isFailure)
++        val attachment = AttachmentContext.assemble(listOf(AttachmentText("1", "doc.txt", "hello")), 100)
++        assertTrue(attachment.text.contains("ATTACHMENT 1: doc.txt"))
++        assertFalse(attachment.truncated)
++    }
++
++    @Test fun modelCatalogueFiltersNonTextAndDeduplicates() {
++        val catalog = ModelCatalogPolicy.canonicalize(
++            listOf(
++                CatalogModel("z", "Zulu", "text"),
++                CatalogModel("a", "Alpha", "text"),
++                CatalogModel("A", "dup", "text"),
++                CatalogModel("img", "Image", "image"),
++            )
++        )
++        assertEquals(listOf("a", "z"), catalog.map { it.id })
++    }
++
++    @Test fun pinPolicyNormalisesAndVerifiesDeterministically() {
++        assertTrue(PinPolicy.isValid("123456"))
++        assertFalse(PinPolicy.isValid("12345"))
++        assertEquals("123456", PinPolicy.normalize("12a345678"))
++        assertEquals(PinPolicy.verifier("123456", "salt"), PinPolicy.verifier("123456", "salt"))
++    }
++
++    @Test fun schedulingAndBackupPoliciesRemainSafe() {
++        assertEquals(15L, SchedulePolicy.normalizedRepeatMinutes(15))
++        assertNull(SchedulePolicy.normalizedRepeatMinutes(14))
++        assertEquals(1_900_000L, SchedulePolicy.nextRun(100_000L, 15, 1_000_000L))
++        assertEquals("kotlin-command-backup", BackupPolicy.FORMAT)
++        assertFalse(BackupPolicy.containsForbiddenKey(BackupPolicy.safeSectionNames()))
++        assertTrue(BackupPolicy.containsForbiddenKey(listOf("workspaces", "apiKey")))
++    }
++
++    @Test fun providerErrorsAndContextBudgetAreClassified() {
++        assertEquals(ProviderErrorKind.AUTH, ProviderErrorPolicy.fromHttp(401))
++        assertEquals(ProviderErrorKind.RATE_LIMIT, ProviderErrorPolicy.fromHttp(429))
++        assertEquals(ProviderErrorKind.SERVER, ProviderErrorPolicy.fromHttp(503))
++        assertTrue(ProviderErrorPolicy.userMessage(ProviderErrorKind.AUTH).contains("API key"))
++        assertEquals(114688, ContextBudgetPolicy.maxContextChars(32768, 4096))
++        assertTrue(ContextBudgetPolicy.maxContextChars(null, 4096) >= 4096)
++    }
++
++    @Test fun legacyImportPolicyRejectsUnsupportedVersionsAndMapsKnownData() {
++        LegacyImportPolicy.validateVersions(1, 1)
++        LegacyImportPolicy.validateVersions(2, 6)
++        assertTrue(runCatching { LegacyImportPolicy.validateVersions(3, 6) }.isFailure)
++        assertTrue(runCatching { LegacyImportPolicy.validateVersions(2, 7) }.isFailure)
++        assertEquals(100, LegacyImportPolicy.memoryPriority("critical"))
++        assertEquals(75, LegacyImportPolicy.memoryPriority("high"))
++        assertEquals(25, LegacyImportPolicy.memoryPriority("low"))
++        assertEquals("together", LegacyImportPolicy.canonicalProvider("Together AI"))
++        assertEquals("openrouter", LegacyImportPolicy.canonicalProvider("OpenRouter"))
++    }
++
++    @Test fun usageGuardrailsWarnAndBlockAtConfiguredThresholds() {
++        val warning = UsageGuardrailPolicy.evaluate(
++            events = listOf(GuardrailUsageEvent("w", 8.0, 1_700_000_000_000L)),
++            budgets = listOf(GuardrailBudget("b", "WORKSPACE", "w", "MONTHLY", 10.0, 80.0, true, true)),
++            workspaceId = "w",
++            now = 1_700_000_100_000L,
++        )
++        assertTrue(warning.allowed)
++        assertTrue(warning.warnings.isNotEmpty())
++
++        val blocked = UsageGuardrailPolicy.evaluate(
++            events = listOf(GuardrailUsageEvent("w", 10.0, 1_700_000_000_000L)),
++            budgets = listOf(GuardrailBudget("b", "WORKSPACE", "w", "MONTHLY", 10.0, 80.0, true, true)),
++            workspaceId = "w",
++            now = 1_700_000_100_000L,
++        )
++        assertFalse(blocked.allowed)
++        assertEquals(1, blocked.blocks.size)
++    }
++}
