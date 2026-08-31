@@ -97,16 +97,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PATCH="$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build6-ai-controls-pause.patch"
-          EXPECTED_BLOB="00ef6021304c6ba3597abdd5c96c5f303f188e62"
-          ACTUAL_BLOB="$(git hash-object "$PATCH")"
-          echo "Expected build6 Git blob: $EXPECTED_BLOB"
-          echo "Actual build6 Git blob:   $ACTUAL_BLOB"
-          test "$EXPECTED_BLOB" = "$ACTUAL_BLOB"
-          sha256sum "$PATCH" | tee "$GITHUB_WORKSPACE/kotlin-command-exec002/BUILD6_PATCH_SHA256_RUNTIME.txt"
+          B64="$GITHUB_WORKSPACE/kotlin-command-exec002/patches/build6-ai-controls-pause.patch.xz.b64"
+          echo "cd9f726bcbab2d27c8298a58a7643bfe59ce838606dc0d081d02115cf9268b85  $B64" | sha256sum -c -
+          base64 --decode "$B64" > /tmp/build6-ai-controls-pause.patch.xz
+          echo "147ea389f202ac925832b482bc048994d0134fe1b8f5ac440cb56402e7ad2fd0  /tmp/build6-ai-controls-pause.patch.xz" | sha256sum -c -
+          xz --decompress --stdout /tmp/build6-ai-controls-pause.patch.xz > /tmp/build6-ai-controls-pause.patch
+          echo "c7cc846029479ca617d8b52fcd724d99d1ce8b20d02334421fab197877602c0a  /tmp/build6-ai-controls-pause.patch" | sha256sum -c -
+          sha256sum /tmp/build6-ai-controls-pause.patch | tee "$GITHUB_WORKSPACE/kotlin-command-exec002/BUILD6_PATCH_SHA256_RUNTIME.txt"
           cd /tmp/kotlin-command-src/kotlin_command
-          patch --dry-run -p1 < "$PATCH"
-          patch -p1 < "$PATCH"
+          patch --dry-run -p1 < /tmp/build6-ai-controls-pause.patch
+          patch -p1 < /tmp/build6-ai-controls-pause.patch
           grep -F 'const val MAX_TOKENS = 1_048_576' app/src/main/java/com/nexarenew/aiconsole/domain/OutputTokenPolicy.kt
           grep -F 'fun pauseGeneration()' app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
           grep -F 'fun resumeGeneration()' app/src/main/java/com/nexarenew/aiconsole/ui/AppViewModel.kt
