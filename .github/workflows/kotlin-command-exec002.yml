@@ -62,6 +62,14 @@ jobs:
           patch -p1 < "$PATCH"
           test -f app/src/test/java/com/nexarenew/aiconsole/domain/PureDomainTest.kt
 
+      - name: Upload post-build4 source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-command-post-build4-source
+          path: /tmp/kotlin-command-src/kotlin_command/
+          if-no-files-found: error
+          retention-days: 2
+
       - name: Verify and apply EXEC002 build-5 DataStore remediation
         shell: bash
         run: |
